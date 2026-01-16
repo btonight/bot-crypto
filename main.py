@@ -57,7 +57,15 @@ def lay_data_binance(symbol, limit=500):
     try:
         pair = symbol.upper() + "USDT"
         url = f"https://api.binance.com/api/v3/klines?symbol={pair}&interval=1m&limit={limit}"
-        data = requests.get(url, timeout=3).json()
+        
+        # --- THÊM ĐOẠN NÀY ĐỂ NGỤY TRANG ---
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        # -----------------------------------
+        
+        data = requests.get(url, headers=headers, timeout=5).json() # Thêm headers vào đây
+        
         if isinstance(data, list) and len(data) > 0:
             opens = [float(x[1]) for x in data]
             highs = [float(x[2]) for x in data]
@@ -65,7 +73,9 @@ def lay_data_binance(symbol, limit=500):
             closes = [float(x[4]) for x in data]
             volumes = [float(x[5]) for x in data]
             return np.array(opens), np.array(highs), np.array(lows), np.array(closes), np.array(volumes), "Binance"
-    except: pass
+    except Exception as e:
+        print(f"Lỗi lấy data Binance: {e}") # In lỗi ra để dễ kiểm tra
+        pass
     return None, None, None, None, None, None
 
 def lay_data_lich_su(symbol, days=7):
@@ -104,7 +114,10 @@ def lay_data_lich_su(symbol, days=7):
 
 def lay_gia_coingecko_smart(symbol):
     try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
+        # Cũng thêm headers y chang vậy
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
         search_url = f"https://api.coingecko.com/api/v3/search?query={symbol}"
         res = requests.get(search_url, headers=headers, timeout=5).json()
         if 'coins' in res and len(res['coins']) > 0:
@@ -582,4 +595,5 @@ def handle_msg(message):
 print("🤖 BOT COMPLETE ĐANG CHẠY...")
 # Kích hoạt server chống ngủ
 keep_alive()
+
 bot.infinity_polling()
