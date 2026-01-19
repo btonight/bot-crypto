@@ -7,32 +7,20 @@ import time
 import threading 
 import re 
 import os 
-import ccxt 
 from keep_alive import keep_alive 
 
-# Chạy ngầm vẽ hình
+# Chạy ngầm vẽ hình (Bắt buộc cho server)
 plt.switch_backend('Agg') 
 
-# --- CẤU HÌNH BẢO MẬT (QUAN TRỌNG) ---
-# Lấy Token và API Key từ biến môi trường Render (Không lộ trên GitHub)
+# --- CẤU HÌNH BẢO MẬT ---
+# Lấy Token từ biến môi trường Render
 API_TOKEN = os.environ.get('BOT_TOKEN')
 if not API_TOKEN:
-    API_TOKEN = 'TOKEN_TEST_CUA_BAN_NEU_CHAY_MAY_TINH' # Chỉ dùng khi test local
+    API_TOKEN = 'TOKEN_TEST_CUA_BAN_NEU_CHAY_MAY_TINH' 
 
 bot = telebot.TeleBot(API_TOKEN)
 
-# KẾT NỐI BINANCE QUA CCXT (Để lấy data chuẩn & Trade thật)
-exchange = ccxt.binance({
-    'apiKey': os.environ.get('BINANCE_API_KEY'),
-    'secret': os.environ.get('BINANCE_SECRET_KEY'),
-    'enableRateLimit': True,
-    'options': {
-        'defaultType': 'future', # Mặc định đánh Futures
-        'adjustForTimeDifference': True
-    }
-})
-
-# DANH SÁCH COIN (Giữ nguyên của bạn)
+# DANH SÁCH COIN
 WATCHLIST_MARKET = ['BTC', 'ETH', 'BNB', 'SOL', 'XRP', 'DOGE', 'ADA', 'AVAX', 'LINK', 'LTC', 'DOT', 'MATIC', 'TRX', 'SHIB', 'NEAR', 'PEPE', 'WIF', 'BONK', 'ARB', 'OP', 'SUI', 'APT', 'FIL', 'ATOM', 'FTM', 'SAND']
 
 USER_DATA = {}
@@ -46,9 +34,7 @@ def get_user_data(chat_id):
             'bet_amount': 50000,  
             'watching': [],       
             'active_trades': {},
-            'stats': {'wins': 0, 'losses': 0},
-            'leverage': 5,      # Mặc định đòn bẩy x5 (Real Trade)
-            'amount_usdt': 10   # Mặc định đi lệnh 10$ (Real Trade)
+            'stats': {'wins': 0, 'losses': 0}
         }
     return USER_DATA[chat_id]
 
@@ -60,7 +46,7 @@ def lay_ty_gia_remitano():
     except: pass
     return 26000
 
-# --- HÀM LẤY DATA BINANCE "XOAY VÒNG 5 CỔNG" (CHỐNG CHẶN) ---
+# --- HÀM LẤY DATA BINANCE CHỐNG CHẶN (XOAY VÒNG 5 CỔNG) ---
 def lay_data_binance(symbol, limit=500):
     # Danh sách các cổng dự phòng của Binance
     NODES = [
@@ -68,11 +54,11 @@ def lay_data_binance(symbol, limit=500):
         "https://api1.binance.com",
         "https://api2.binance.com",
         "https://api3.binance.com",
-        "https://data-api.binance.vision"
+        "https://data-api.binance.vision" # Cổng public data cực ngon
     ]
     
     pair = symbol.upper() + "USDT"
-    # Header giả danh trình duyệt Chrome xịn
+    # Giả danh trình duyệt
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
@@ -83,7 +69,6 @@ def lay_data_binance(symbol, limit=500):
             data = requests.get(url, headers=headers, timeout=2).json()
             
             if isinstance(data, list) and len(data) > 0:
-                # Nếu lấy được data thì return ngay
                 opens = [float(x[1]) for x in data]
                 highs = [float(x[2]) for x in data]
                 lows = [float(x[3]) for x in data]
@@ -91,13 +76,13 @@ def lay_data_binance(symbol, limit=500):
                 volumes = [float(x[5]) for x in data]
                 return np.array(opens), np.array(highs), np.array(lows), np.array(closes), np.array(volumes), "Binance"
         except:
-            continue # Lỗi cổng này thì thử cổng kế tiếp
+            continue # Lỗi cổng này thì nhảy cổng khác ngay
 
-    print(f"⚠️ {symbol}: Tất cả cổng Binance đều nghẽn.")
+    print(f"⚠️ {symbol}: Mạng Render đang nghẽn kết nối Binance.")
     return None, None, None, None, None, None
 
 def lay_data_lich_su(symbol, days=7):
-    # Hàm này dùng cho Backtest, dùng cổng chính là đủ
+    # Hàm này dùng cho Backtest
     try:
         pair = symbol.upper() + "USDT"
         limit_per_req = 1000
@@ -143,9 +128,9 @@ def lay_gia_coingecko_smart(symbol):
     except: pass
     return None, None, None
 
-# --- TÍNH TOÁN CHỈ BÁO MỚI (VWAP + BB + RSI 7) - GIỮ NGUYÊN CỦA BẠN ---
+# --- TÍNH TOÁN CHỈ BÁO MỚI (VWAP + BB + RSI 7) ---
 def calculate_indicators(closes, highs, lows, volumes):
-    # 1. TÍNH RSI (Chu kỳ 7)
+    # 1. RSI (Chu kỳ 7)
     def get_rsi(data, period=7):
         deltas = np.diff(data)
         seed = deltas[:period+1]
@@ -166,13 +151,13 @@ def calculate_indicators(closes, highs, lows, volumes):
             rsi[i] = 100. - 100./(1. + rs)
         return rsi
 
-    # 2. TÍNH VWAP
+    # 2. VWAP
     typical_price = (highs + lows + closes) / 3
     cum_pv = np.cumsum(typical_price * volumes)
     cum_vol = np.cumsum(volumes)
     vwap = cum_pv / cum_vol
 
-    # 3. TÍNH BOLLINGER BANDS (20, 2)
+    # 3. BOLLINGER BANDS (20, 2)
     sma20 = np.zeros_like(closes)
     std20 = np.zeros_like(closes)
     
@@ -184,17 +169,16 @@ def calculate_indicators(closes, highs, lows, volumes):
     bb_upper = sma20 + (2 * std20)
     bb_lower = sma20 - (2 * std20)
     
-    # 4. RSI 7
+    # 4. RSI 7 & Vol SMA
     rsi7 = get_rsi(closes, 7)
     
-    # 5. Vol Average (SMA 20)
     vol_sma = np.zeros_like(volumes)
     for i in range(20, len(volumes)):
         vol_sma[i] = np.mean(volumes[i-20:i])
 
     return {'vwap': vwap, 'bb_upper': bb_upper, 'bb_lower': bb_lower, 'rsi': rsi7, 'vol_sma': vol_sma}
 
-# --- LOGIC TÍN HIỆU PRICE ACTION (GIỮ NGUYÊN CỦA BẠN) ---
+# --- LOGIC TÍN HIỆU PRICE ACTION (MỚI) ---
 def kiem_tra_tin_hieu(opens, highs, lows, closes, volumes, inds):
     if len(closes) < 30: return None, 0, 0, ""
     
@@ -216,6 +200,7 @@ def kiem_tra_tin_hieu(opens, highs, lows, closes, volumes, inds):
     ly_do = ""
 
     # === SETUP 1: PULLBACK VỀ VWAP ===
+    # Giá đang trên VWAP, rớt về chạm VWAP rồi bật lên
     if p_close > vwap: 
         if (p_low <= vwap * 1.001) and (p_close > p_open): 
             if (40 <= rsi <= 55) and (vol_now > vol_avg):
@@ -224,6 +209,7 @@ def kiem_tra_tin_hieu(opens, highs, lows, closes, volumes, inds):
                 sl = min(p_low, vwap) * 0.998 
                 tp = p_close + (p_close - sl) * 1.5
 
+    # Giá đang dưới VWAP, hồi lên chạm VWAP rồi rớt xuống
     elif p_close < vwap: 
         if (p_high >= vwap * 0.999) and (p_close < p_open):
             if (45 <= rsi <= 60) and (vol_now > vol_avg):
@@ -232,8 +218,9 @@ def kiem_tra_tin_hieu(opens, highs, lows, closes, volumes, inds):
                 sl = max(p_high, vwap) * 1.002
                 tp = p_close - (sl - p_close) * 1.5
 
-    # === SETUP 2: BOUNCE TỪ BAND ===
+    # === SETUP 2: BOUNCE TỪ BAND (Đánh Đảo Chiều) ===
     if not tin_hieu:
+        # Chạm Band Dưới + RSI quá bán (<35) -> Mua lên
         if (p_low <= bb_lower) and (p_close > bb_lower) and (p_close > p_open):
             if rsi <= 35:
                 tin_hieu = "LONG (BB Bounce) 🟢"
@@ -241,6 +228,7 @@ def kiem_tra_tin_hieu(opens, highs, lows, closes, volumes, inds):
                 sl = p_low * 0.997
                 tp = p_close + (p_close - sl) * 2.0 
 
+        # Chạm Band Trên + RSI quá mua (>65) -> Bán xuống
         elif (p_high >= bb_upper) and (p_close < bb_upper) and (p_close < p_open):
             if rsi >= 65:
                 tin_hieu = "SHORT (BB Bounce) 🔴"
@@ -250,30 +238,7 @@ def kiem_tra_tin_hieu(opens, highs, lows, closes, volumes, inds):
 
     return tin_hieu, sl, tp, ly_do
 
-# --- HÀM ĐẶT LỆNH THẬT (REAL TRADE) ---
-# Hàm này dùng CCXT để đặt lệnh thật trên Binance nếu bạn muốn
-def place_real_order(symbol, side, amount_usdt, leverage):
-    try:
-        pair = symbol + '/USDT'
-        # 1. Cài đòn bẩy
-        try: exchange.set_leverage(leverage, pair)
-        except: pass 
-
-        # 2. Tính số lượng coin
-        ticker = exchange.fetch_ticker(pair)
-        price = ticker['last']
-        amount_coin = (amount_usdt * leverage) / price
-        
-        # 3. ĐẶT LỆNH MARKET (Bỏ comment dòng dưới để chạy thật)
-        # order = exchange.create_market_order(pair, side.lower(), amount_coin)
-        # return f"✅ Đã khớp lệnh {side.upper()} {symbol} (Real)!\nGiá: {price}"
-
-        return f"⚡ TÍN HIỆU {side.upper()} {symbol} (TEST)\nGiá: {price}\n(Muốn trade thật hãy bỏ comment trong code)"
-    except Exception as e:
-        return f"❌ Lỗi Real Trade: {e}"
-
-
-# --- HÀM BACKTEST (GIỮ NGUYÊN) ---
+# --- HÀM BACKTEST (GIỮ NGUYÊN LOGIC MỚI) ---
 def process_backtest(chat_id, symbol, start_capital, days):
     try:
         opens, highs, lows, closes, vols, count = lay_data_lich_su(symbol, days=days)
@@ -317,7 +282,7 @@ def process_backtest(chat_id, symbol, start_capital, days):
             
             if balance <= 10000: break
             
-            # Logic Backtest khớp với Logic Tín hiệu
+            # Logic Backtest y chang Logic Trade
             p_c = closes[i]
             p_o = opens[i]
             p_l = lows[i]
@@ -360,7 +325,7 @@ def process_backtest(chat_id, symbol, start_capital, days):
     except Exception as e:
         bot.send_message(chat_id, f"❌ Lỗi: {e}")
 
-# --- VẼ CHART (GIỮ NGUYÊN) ---
+# --- VẼ CHART (CẬP NHẬT VWAP + BB) ---
 def ve_chart(symbol, prices, inds):
     view = 80 
     p_view = prices[-view:]
@@ -393,10 +358,10 @@ def ve_chart(symbol, prices, inds):
     plt.close()
     return buf
 
-# --- CÁC HÀM SCAN, TRADE, MONITOR ---
+# --- CÁC HÀM SCAN, TRADE, MONITOR (PAPER TRADE ONLY) ---
 def scan_market(chat_id):
     bot.send_message(chat_id, "📡 **Đang quét tín hiệu PA (1m)...**", parse_mode="Markdown")
-    signals, potentials = [], []
+    signals = []
     for symbol in WATCHLIST_MARKET:
         opens, highs, lows, closes, vols, _ = lay_data_binance(symbol)
         if closes is not None:
@@ -408,44 +373,43 @@ def scan_market(chat_id):
 
 def execute_trade(chat_id, symbol, tin_hieu, ly_do, entry, sl, tp):
     user = get_user_data(chat_id)
-    # Đây là đánh Paper (Demo)
+    # PAPER TRADE (TIỀN ẢO)
     if user['balance'] <= 0:
         bot.send_message(chat_id, "❌ **Hết tiền Demo rồi!**")
         return
     trade_amount = user['bet_amount']
     if user['balance'] < user['bet_amount']: trade_amount = user['balance']
     user['balance'] -= trade_amount
+    
     user['active_trades'][symbol] = {
         'type': 'LONG' if 'LONG' in tin_hieu else 'SHORT',
         'entry': entry, 'sl': sl, 'tp': tp, 'amount': trade_amount, 'leverage': 20
     }
     
-    # NẾU MUỐN TRADE THẬT THÌ GỌI HÀM NÀY
-    real_msg = place_real_order(symbol, 'buy' if 'LONG' in tin_hieu else 'sell', user['amount_usdt'], user['leverage'])
-    
     global TY_GIA_USDT_CACHE
     entry_vnd = entry * TY_GIA_USDT_CACHE
     msg = (
         f"🚀 **ENTRY NOW: {symbol}**\nLoại: **{tin_hieu}**\nLý do: {ly_do}\n"
-        f"Entry: **${entry:,.4f}**\nSL: **${sl:,.4f}** | TP: **${tp:,.4f}**\n"
-        f"--------------------\n{real_msg}"
+        f"Entry: **${entry:,.4f}** (≈ {entry_vnd:,.0f} đ)\n"
+        f"SL: **${sl:,.4f}** | TP: **${tp:,.4f}**\n"
+        f"--------------------\n💰 Còn lại (Demo): {user['balance']:,.0f} đ"
     )
     bot.send_message(chat_id, msg, parse_mode="Markdown")
 
-# --- MONITOR 24/7 (CÓ ÁO GIÁP CHỐNG CRASH) ---
+# --- MONITOR 24/7 (SAFE MODE - CHỐNG CRASH) ---
 def monitor_thread(chat_id):
     bot.send_message(chat_id, "🤖 Bot bắt đầu canh lệnh 24/7 (Safe Mode)...")
     while True:
-        try: # ÁO GIÁP LỚP 1
+        try: 
             user = get_user_data(chat_id)
             if not user['watching'] and not user['active_trades']: 
                 time.sleep(10)
                 continue
 
-            # Auto Entry
+            # 1. Quét tìm lệnh Mới
             current_watching = list(user['watching']) 
             for symbol in current_watching:
-                try: # ÁO GIÁP LỚP 2
+                try: 
                     opens, highs, lows, closes, vols, _ = lay_data_binance(symbol)
                     if closes is not None:
                         inds = calculate_indicators(closes, highs, lows, vols)
@@ -455,7 +419,7 @@ def monitor_thread(chat_id):
                             if symbol in user['watching']: user['watching'].remove(symbol)
                 except Exception as e: print(f"Lỗi check {symbol}: {e}")
             
-            # Manage Trades (Check TP/SL)
+            # 2. Quản lý lệnh đang chạy (Check TP/SL ảo)
             active_symbols = list(user['active_trades'].keys())
             for symbol in active_symbols:
                 try:
@@ -475,7 +439,7 @@ def monitor_thread(chat_id):
                             ket_qua = "WIN 🟢" if hit_tp else "LOSS 🔴"
                             if hit_tp: user['stats']['wins'] += 1
                             else: user['stats']['losses'] += 1
-                            bot.send_message(chat_id, f"🔔 **KẾT THÚC {symbol}: {ket_qua}**\nLãi/Lỗ: {pnl:+,.0f} đ\n💰 Vốn mới: {user['balance']:,.0f} đ", parse_mode="Markdown")
+                            bot.send_message(chat_id, f"🔔 **KẾT THÚC {symbol}: {ket_qua}**\nLãi/Lỗ: {pnl:+,.0f} đ\n💰 Vốn mới (Demo): {user['balance']:,.0f} đ", parse_mode="Markdown")
                             del user['active_trades'][symbol]
                 except: pass
 
@@ -484,16 +448,16 @@ def monitor_thread(chat_id):
             print(f"Lỗi Monitor: {e}")
             time.sleep(10)
 
-# --- BOT COMMANDS (GIỮ NGUYÊN) ---
+# --- BOT COMMANDS ---
 @bot.message_handler(commands=['start', 'help'])
 def send_help(message):
     user = get_user_data(message.chat.id)
     help_text = (
-        "📖 **HƯỚNG DẪN BOT PRICE ACTION** 📖\n\n"
-        "1️⃣ **CÀI ĐẶT:** `/Von`, `/Cuoc`, `/setup [Vốn] [Đòn bẩy]`\n"
+        "📖 **BOT PRICE ACTION (VWAP + BB)** 📖\n\n"
+        "1️⃣ **CÀI ĐẶT:** `/Von`, `/Cuoc` (Tiền ảo demo)\n"
         "2️⃣ **BACKTEST:** `Backtest [Coin] Von [Tiền]`\n"
-        "3️⃣ **TRADE:** `Entry now`, `Scan`, `Theo doi [Coin]`\n"
-        "4️⃣ **REAL TRADE:** Đã tích hợp API Binance (Cần cài API Key trong Render).\n"
+        "3️⃣ **AUTO:** `Scan`, `Theo doi [Coin]`, `Dung`\n"
+        "4️⃣ **KHÁC:** `Thong ke`, `Xem theo doi`\n"
         "--------------------------\n"
         f"💰 Vốn Demo: {user['balance']:,.0f} đ"
     )
@@ -505,17 +469,6 @@ def handle_msg(message):
     chat_id = message.chat.id
     user = get_user_data(chat_id)
     
-    # SETUP REAL TRADE
-    if text.startswith("/SETUP"):
-        try:
-            parts = message.text.split()
-            user['amount_usdt'] = float(parts[1])
-            user['leverage'] = int(parts[2])
-            bot.reply_to(message, f"✅ Real Trade Setup: Vốn {user['amount_usdt']}$ - Leverage x{user['leverage']}")
-        except: bot.reply_to(message, "Sai cú pháp. VD: `/setup 10 5`")
-        return
-
-    # SETTINGS
     if text.startswith("VON "):
         try:
             user['balance'] = int(''.join(filter(str.isdigit, text)))
@@ -532,7 +485,6 @@ def handle_msg(message):
         bot.reply_to(message, f"💰 Vốn: {user['balance']:,.0f} đ")
         return
 
-    # BACKTEST
     if text.startswith("BACKTEST"):
         try:
             days = 30 if "1 THANG" in text or "1 THÁNG" in text else 7
@@ -552,7 +504,6 @@ def handle_msg(message):
         except: pass
         return
 
-    # ENTRY NOW
     if text.startswith("ENTRY NOW"):
         symbol = text.replace("ENTRY NOW", "").replace("(", "").replace(")", "").strip()
         opens, highs, lows, closes, vols, _ = lay_data_binance(symbol)
@@ -560,8 +511,6 @@ def handle_msg(message):
         inds = calculate_indicators(closes, highs, lows, vols)
         p_now = closes[-1]
         vwap = inds['vwap'][-1]
-        
-        # Logic thủ công theo VWAP
         if p_now > vwap:
             direc = "LONG 🟢 (Trend VWAP)"
             sl = min(lows[-1], vwap) * 0.998
@@ -574,7 +523,6 @@ def handle_msg(message):
         threading.Thread(target=monitor_thread, args=(chat_id,)).start()
         return
 
-    # SCAN, THEO DOI...
     if text == "SCAN":
         res = scan_market(chat_id)
         if res: bot.reply_to(message, "🔍 **KÈO PRICE ACTION:**\n" + "\n".join(res))
@@ -602,7 +550,6 @@ def handle_msg(message):
         else: bot.reply_to(message, "📭 Trống.")
         return
 
-    # CHECK COIN
     symbol = text.split()[0]
     msg = bot.reply_to(message, f"🔍 Check {symbol}...")
     ty = lay_ty_gia_remitano()
@@ -629,6 +576,6 @@ def handle_msg(message):
         else:
              bot.edit_message_text("❌ Không tìm thấy.", chat_id, msg.message_id)
 
-print("🤖 BOT PRICE ACTION ĐANG CHẠY (SECURE MODE)...")
+print("🤖 BOT SIGNAL ĐANG CHẠY (SECURE MODE)...")
 keep_alive()
 bot.infinity_polling()
