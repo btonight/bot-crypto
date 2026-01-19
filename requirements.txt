@@ -3,4 +3,3 @@ requests
 numpy
 matplotlib
 flask
-ccxt
