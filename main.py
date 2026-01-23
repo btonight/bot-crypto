@@ -31,8 +31,8 @@ def get_user_data(chat_id):
         USER_DATA[chat_id] = {
             'balance': 500000,    
             'bet_amount': 50000,  
-            'watching': [],       # List Theo dõi thường (1 lần)
-            'auto_watching': [],  # List Auto (Vòng lặp 24/7) <-- MỚI
+            'watching': [],       
+            'auto_watching': [],  
             'active_trades': {},
             'stats': {'wins': 0, 'losses': 0}
         }
@@ -46,7 +46,7 @@ def lay_ty_gia_remitano():
     except: pass
     return 26000
 
-# --- LẤY DATA BINANCE (5 CỔNG) ---
+# --- LẤY DATA BINANCE ---
 def lay_data_binance(symbol, limit=500):
     NODES = [
         "https://api.binance.com", 
@@ -118,7 +118,7 @@ def lay_gia_coingecko_smart(symbol):
     except: pass
     return None, None, None
 
-# --- CHỈ BÁO VWAP + BB + RSI ---
+# --- CHỈ BÁO ---
 def calculate_indicators(closes, highs, lows, volumes):
     def get_rsi(data, period=7):
         deltas = np.diff(data)
@@ -142,7 +142,9 @@ def calculate_indicators(closes, highs, lows, volumes):
     typical_price = (highs + lows + closes) / 3
     cum_pv = np.cumsum(typical_price * volumes)
     cum_vol = np.cumsum(volumes)
-    vwap = cum_pv / cum_vol
+    # Xử lý chia cho 0
+    with np.errstate(divide='ignore', invalid='ignore'):
+        vwap = np.where(cum_vol == 0, 0, cum_pv / cum_vol)
 
     sma20 = np.zeros_like(closes)
     std20 = np.zeros_like(closes)
@@ -161,7 +163,7 @@ def calculate_indicators(closes, highs, lows, volumes):
 
     return {'vwap': vwap, 'bb_upper': bb_upper, 'bb_lower': bb_lower, 'rsi': rsi7, 'vol_sma': vol_sma}
 
-# --- TÍN HIỆU PRICE ACTION ---
+# --- TÍN HIỆU ---
 def kiem_tra_tin_hieu(opens, highs, lows, closes, volumes, inds):
     if len(closes) < 30: return None, 0, 0, ""
     
@@ -212,7 +214,7 @@ def kiem_tra_tin_hieu(opens, highs, lows, closes, volumes, inds):
 
     return tin_hieu, sl, tp, ly_do
 
-# --- BACKTEST (GIAO DIỆN CHUẨN CŨ) ---
+# --- BACKTEST ---
 def process_backtest(chat_id, symbol, start_capital, days):
     try:
         opens, highs, lows, closes, vols, count = lay_data_lich_su(symbol, days=days)
@@ -256,6 +258,7 @@ def process_backtest(chat_id, symbol, start_capital, days):
             
             if balance <= 10000: break
             
+            # Logic Tín hiệu
             p_c = closes[i]
             p_o = opens[i]
             p_l = lows[i]
@@ -309,7 +312,6 @@ def process_backtest(chat_id, symbol, start_capital, days):
     except Exception as e:
         bot.send_message(chat_id, f"❌ Lỗi: {e}")
 
-# --- VẼ CHART ---
 def ve_chart(symbol, prices, inds):
     view = 80 
     p_view = prices[-view:]
@@ -342,7 +344,7 @@ def ve_chart(symbol, prices, inds):
     plt.close()
     return buf
 
-# --- EXECUTE (CÓ THÊM THAM SỐ LOOP) ---
+# --- EXECUTE ---
 def scan_market(chat_id):
     bot.send_message(chat_id, "📡 **Đang quét tín hiệu PA (1m)...**", parse_mode="Markdown")
     signals = []
@@ -364,12 +366,11 @@ def execute_trade(chat_id, symbol, tin_hieu, ly_do, entry, sl, tp, is_auto=False
     if user['balance'] < user['bet_amount']: trade_amount = user['balance']
     user['balance'] -= trade_amount
     
-    # Lưu trạng thái is_auto để biết đường mà lặp lại
     user['active_trades'][symbol] = {
         'type': 'LONG' if 'LONG' in tin_hieu else 'SHORT',
         'entry': entry, 'sl': sl, 'tp': tp, 
         'amount': trade_amount, 'leverage': 20,
-        'is_auto': is_auto # Cờ đánh dấu đây là lệnh Auto Loop
+        'is_auto': is_auto 
     }
     
     global TY_GIA_USDT_CACHE
@@ -387,7 +388,7 @@ def execute_trade(chat_id, symbol, tin_hieu, ly_do, entry, sl, tp, is_auto=False
     )
     bot.send_message(chat_id, msg, parse_mode="Markdown")
 
-# --- MONITOR 24/7 (XỬ LÝ CẢ THEO DÕI VÀ AUTO) ---
+# --- MONITOR 24/7 ---
 def monitor_thread(chat_id):
     bot.send_message(chat_id, "🤖 Bot bắt đầu canh lệnh 24/7 (Safe Mode)...")
     while True:
@@ -397,7 +398,7 @@ def monitor_thread(chat_id):
                 time.sleep(10)
                 continue
 
-            # 1. Quét list THEO DÕI (1 lần rồi thôi)
+            # 1. Quét list THEO DÕI (1 lần)
             current_watching = list(user['watching']) 
             for symbol in current_watching:
                 try: 
@@ -410,11 +411,10 @@ def monitor_thread(chat_id):
                             if symbol in user['watching']: user['watching'].remove(symbol)
                 except Exception as e: pass
 
-            # 2. Quét list AUTO (Lặp lại sau khi chốt)
+            # 2. Quét list AUTO (Lặp lại)
             current_auto = list(user['auto_watching']) 
             for symbol in current_auto:
                 try: 
-                    # Nếu đang có lệnh active của coin này rồi thì bỏ qua không quét nữa (Chờ chốt xong mới quét tiếp)
                     if symbol in user['active_trades']: continue 
 
                     opens, highs, lows, closes, vols, _ = lay_data_binance(symbol)
@@ -423,10 +423,9 @@ def monitor_thread(chat_id):
                         tin_hieu, sl, tp, ly_do = kiem_tra_tin_hieu(opens, highs, lows, closes, vols, inds)
                         if tin_hieu:
                             execute_trade(chat_id, symbol, tin_hieu, ly_do, closes[-1], sl, tp, is_auto=True)
-                            # Không xóa khỏi user['auto_watching'], nhưng vì đã vào active_trades nên vòng lặp sau sẽ bị chặn bởi dòng if ở trên
                 except Exception as e: pass
             
-            # 3. Quản lý lệnh đang chạy (Check TP/SL)
+            # 3. Quản lý lệnh đang chạy
             active_symbols = list(user['active_trades'].keys())
             for symbol in active_symbols:
                 try:
@@ -454,7 +453,6 @@ def monitor_thread(chat_id):
                             bot.send_message(chat_id, f"🔔 **KẾT THÚC {symbol}: {ket_qua}**\nLãi/Lỗ: {pnl:+,.0f} đ\n💰 Vốn mới: {user['balance']:,.0f} đ{auto_msg}", parse_mode="Markdown")
                             
                             del user['active_trades'][symbol]
-                            # Lưu ý: Với Auto, symbol vẫn nằm trong user['auto_watching'] nên vòng quét sau sẽ tự động chạy lại.
                 except: pass
 
             time.sleep(60) 
@@ -505,13 +503,11 @@ def handle_auto(message):
         chat_id = message.chat.id
         user = get_user_data(chat_id)
         
-        # Thêm vào list Auto
         added = []
         for c in coins:
             if c not in user['auto_watching']:
                 user['auto_watching'].append(c)
                 added.append(c)
-                # Nếu đang ở chế độ 'Theo doi' thường thì xóa đi để chuyển sang Auto
                 if c in user['watching']: user['watching'].remove(c)
 
         if added:
@@ -592,15 +588,14 @@ def handle_msg(message):
         valid = [c.strip().upper() for c in coins if c.strip()][:5]
         if valid:
             user['watching'] = valid
-            # Xóa khỏi Auto nếu có (ưu tiên lệnh mới nhất)
-            if c in user['auto_watching']: user['auto_watching'].remove(c)
-            
+            for coin in valid:
+                if coin in user['auto_watching']: user['auto_watching'].remove(coin)
             bot.reply_to(message, f"📡 Đang canh (1 lần): {', '.join(valid)}")
             threading.Thread(target=monitor_thread, args=(chat_id,)).start()
         return
     if text == "DUNG":
         user['watching'] = []
-        user['auto_watching'] = [] # Xóa luôn cả list Auto
+        user['auto_watching'] = [] 
         bot.reply_to(message, "🛑 Đã dừng tất cả (Auto & Theo dõi).")
         return
     if text in ["THONG KE", "THỐNG KÊ"]:
@@ -642,6 +637,6 @@ def handle_msg(message):
         else:
              bot.edit_message_text("❌ Không tìm thấy.", chat_id, msg.message_id)
 
-print("🤖 BOT SIGNAL AUTO ĐANG CHẠY (GIAO DIỆN CHUẨN)...")
+print("🤖 BOT SIGNAL ĐANG CHẠY (FIX NAME ERROR)...")
 keep_alive()
 bot.infinity_polling()
