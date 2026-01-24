@@ -162,7 +162,7 @@ def calculate_indicators(closes, highs, lows, volumes):
 
     return {'vwap': vwap, 'bb_upper': bb_upper, 'bb_lower': bb_lower, 'rsi': rsi7, 'vol_sma': vol_sma}
 
-# --- TÍN HIỆU (ĐÃ CHỈNH SL/TP HỢP LÝ) ---
+# --- TÍN HIỆU (HARDCORE MODE - KHÓ TÍNH) ---
 def kiem_tra_tin_hieu(opens, highs, lows, closes, volumes, inds):
     if len(closes) < 30: return None, 0, 0, ""
     
@@ -175,49 +175,56 @@ def kiem_tra_tin_hieu(opens, highs, lows, closes, volumes, inds):
     bb_upper = inds['bb_upper'][i]
     bb_lower = inds['bb_lower'][i]
     rsi = inds['rsi'][i]
+    vol_now = volumes[i]
+    vol_avg = inds['vol_sma'][i]
     
     tin_hieu = None
     sl, tp = 0, 0
     ly_do = ""
 
-    # Setup 1: VWAP Touch (Giữ độ nhạy, chỉnh lại SL/TP)
+    # Setup 1: VWAP Pullback (QUAY LẠI CHẾ ĐỘ 3 ĐIỀU KIỆN)
+    # Điều kiện:
+    # 1. Chạm cực sát VWAP (0.1%)
+    # 2. RSI chuẩn form (40-55)
+    # 3. Volume > Trung bình (Tiền phải vào)
+    
     if p_close > vwap: 
-        if (p_low <= vwap * 1.005) and (30 <= rsi <= 70): 
-            tin_hieu = "LONG (VWAP Touch) 🟢"
-            ly_do = "Giá chạm vùng VWAP"
-            # SL 0.3% (Tầm 3 giá với BNB)
-            sl = min(p_low, vwap) * 0.997 
-            # TP x2.0 (Tầm 6 giá với BNB)
-            tp = p_close + (p_close - sl) * 2.0
+        if (p_low <= vwap * 1.001) and (p_close > p_open): # Chạm sát + Nến xanh
+            if (40 <= rsi <= 55) and (vol_now > vol_avg): # RSI đẹp + Vol to
+                tin_hieu = "LONG (VWAP Pullback) 🟢"
+                ly_do = "Trend Lên + Chạm VWAP + Vol tốt"
+                # SL 0.3% (Giữ nguyên cái bạn thích)
+                sl = min(p_low, vwap) * 0.997 
+                # TP x2.0
+                tp = p_close + (p_close - sl) * 2.0
 
     elif p_close < vwap: 
-        if (p_high >= vwap * 0.995) and (30 <= rsi <= 70):
-            tin_hieu = "SHORT (VWAP Touch) 🔴"
-            ly_do = "Giá chạm vùng VWAP"
-            # SL 0.3%
-            sl = max(p_high, vwap) * 1.003
-            # TP x2.0
-            tp = p_close - (sl - p_close) * 2.0
+        if (p_high >= vwap * 0.999) and (p_close < p_open): # Chạm sát + Nến đỏ
+            if (45 <= rsi <= 60) and (vol_now > vol_avg): # RSI đẹp + Vol to
+                tin_hieu = "SHORT (VWAP Pullback) 🔴"
+                ly_do = "Trend Xuống + Chạm VWAP + Vol tốt"
+                sl = max(p_high, vwap) * 1.003
+                tp = p_close - (sl - p_close) * 2.0
 
-    # Setup 2: BB Bounce
+    # Setup 2: BB Bounce (Cũng phải có Volume mới chơi)
     if not tin_hieu:
-        if (p_low <= bb_lower): 
-            if rsi <= 45:
+        if (p_low <= bb_lower) and (p_close > bb_lower) and (p_close > p_open):
+            if (rsi <= 35) and (vol_now > vol_avg): # Thêm điều kiện Vol
                 tin_hieu = "LONG (BB Bounce) 🟢"
-                ly_do = "Thủng Band Dưới + RSI thấp"
-                sl = p_low * 0.997 # SL 0.3%
-                tp = p_close + (p_close - sl) * 2.0 # TP x2.0
+                ly_do = "Chạm Band Dưới + RSI quá bán + Vol tốt"
+                sl = p_low * 0.997
+                tp = p_close + (p_close - sl) * 2.0 
 
-        elif (p_high >= bb_upper):
-            if rsi >= 55:
+        elif (p_high >= bb_upper) and (p_close < bb_upper) and (p_close < p_open):
+            if (rsi >= 65) and (vol_now > vol_avg): # Thêm điều kiện Vol
                 tin_hieu = "SHORT (BB Bounce) 🔴"
-                ly_do = "Thủng Band Trên + RSI cao"
-                sl = p_high * 1.003 # SL 0.3%
-                tp = p_close - (sl - p_close) * 2.0 # TP x2.0
+                ly_do = "Chạm Band Trên + RSI quá mua + Vol tốt"
+                sl = p_high * 1.003
+                tp = p_close - (sl - p_close) * 2.0
 
     return tin_hieu, sl, tp, ly_do
 
-# --- BACKTEST (CẬP NHẬT SL/TP MỚI) ---
+# --- BACKTEST (CẬP NHẬT LOGIC HARDCORE) ---
 def process_backtest(chat_id, symbol, start_capital, days):
     try:
         opens, highs, lows, closes, vols, count = lay_data_lich_su(symbol, days=days)
@@ -262,27 +269,30 @@ def process_backtest(chat_id, symbol, start_capital, days):
             if balance <= 10000: break
             
             p_c = closes[i]
+            p_o = opens[i]
             p_l = lows[i]
             p_h = highs[i]
             vwap = inds['vwap'][i]
             bbl = inds['bb_lower'][i]
             bbu = inds['bb_upper'][i]
             rsi = inds['rsi'][i]
+            v_now = vols[i]
+            v_avg = inds['vol_sma'][i]
             
-            # Logic Backtest (Đã chỉnh SL 0.3% - TP x2)
-            if (p_c > vwap) and (p_l <= vwap * 1.005) and (30 <= rsi <= 70):
+            # Logic Hardcore (3 điều kiện)
+            if (p_c > vwap) and (p_l <= vwap * 1.001) and (p_c > p_o) and (40 <= rsi <= 55) and (v_now > v_avg):
                 sl = min(p_l, vwap) * 0.997
                 tp = p_c + (p_c - sl) * 2.0
                 active_trade = {'type':'LONG', 'entry':p_c, 'sl':sl, 'tp':tp, 'amount':balance}
-            elif (p_c < vwap) and (p_h >= vwap * 0.995) and (30 <= rsi <= 70):
+            elif (p_c < vwap) and (p_h >= vwap * 0.999) and (p_c < p_o) and (45 <= rsi <= 60) and (v_now > v_avg):
                 sl = max(p_h, vwap) * 1.003
                 tp = p_c - (sl - p_c) * 2.0
                 active_trade = {'type':'SHORT', 'entry':p_c, 'sl':sl, 'tp':tp, 'amount':balance}
-            elif (p_l <= bbl) and (rsi <= 45):
+            elif (p_l <= bbl) and (p_c > bbl) and (rsi <= 35) and (v_now > v_avg):
                 sl = p_l * 0.997
                 tp = p_c + (p_c - sl) * 2.0
                 active_trade = {'type':'LONG', 'entry':p_c, 'sl':sl, 'tp':tp, 'amount':balance}
-            elif (p_h >= bbu) and (rsi >= 55):
+            elif (p_h >= bbu) and (p_c < bbu) and (rsi >= 65) and (v_now > v_avg):
                 sl = p_h * 1.003
                 tp = p_c - (sl - p_c) * 2.0
                 active_trade = {'type':'SHORT', 'entry':p_c, 'sl':sl, 'tp':tp, 'amount':balance}
@@ -294,7 +304,7 @@ def process_backtest(chat_id, symbol, start_capital, days):
         if balance < 10000: emoji = "💀 CHÁY TK"
 
         msg = (
-            f"📊 **BACKTEST ({days} NGÀY) - TP/SL HỢP LÝ**\n"
+            f"📊 **BACKTEST ({days} NGÀY) - HARDCORE MODE**\n"
             f"Coin: **{symbol}**\n"
             f"Số nến: {count}\n"
             f"--------------------------\n"
@@ -344,7 +354,7 @@ def ve_chart(symbol, prices, inds):
 
 # --- EXECUTE ---
 def scan_market(chat_id):
-    bot.send_message(chat_id, "📡 **Đang quét tín hiệu (Hợp lý)...**", parse_mode="Markdown")
+    bot.send_message(chat_id, "📡 **Đang quét tín hiệu (Hardcore + Vol)...**", parse_mode="Markdown")
     signals = []
     for symbol in WATCHLIST_MARKET:
         opens, highs, lows, closes, vols, _ = lay_data_binance(symbol)
@@ -388,7 +398,7 @@ def execute_trade(chat_id, symbol, tin_hieu, ly_do, entry, sl, tp, is_auto=False
 
 # --- MONITOR 24/7 ---
 def monitor_thread(chat_id):
-    bot.send_message(chat_id, "🤖 Bot bắt đầu canh lệnh 24/7 (Cấu hình chuẩn)...")
+    bot.send_message(chat_id, "🤖 Bot bắt đầu canh lệnh 24/7 (Hardcore Mode)...")
     while True:
         try: 
             user = get_user_data(chat_id)
@@ -462,7 +472,7 @@ def monitor_thread(chat_id):
 def send_help(message):
     user = get_user_data(message.chat.id)
     help_text = (
-        "📖 **HƯỚNG DẪN BOT PRICE ACTION (CHUẨN SCALPING)** 📖\n\n"
+        "📖 **HƯỚNG DẪN BOT PRICE ACTION (HARDCORE)** 📖\n\n"
         "🛠 **1. CÀI ĐẶT & VỐN:**\n"
         "   👉 `/Von [Số tiền]`: Cài tổng vốn (Ví dụ: `/Von 1000000`)\n"
         "   👉 `/Cuoc [Số tiền]`: Cài tiền đi lệnh (Ví dụ: `/Cuoc 50000`)\n"
@@ -635,6 +645,6 @@ def handle_msg(message):
         else:
              bot.edit_message_text("❌ Không tìm thấy.", chat_id, msg.message_id)
 
-print("🤖 BOT SIGNAL ĐANG CHẠY (TP/SL FIX)...")
+print("🤖 BOT SIGNAL ĐANG CHẠY (HARDCORE MODE)...")
 keep_alive()
 bot.infinity_polling()
