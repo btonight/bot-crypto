@@ -162,7 +162,7 @@ def calculate_indicators(closes, highs, lows, volumes):
 
     return {'vwap': vwap, 'bb_upper': bb_upper, 'bb_lower': bb_lower, 'rsi': rsi7, 'vol_sma': vol_sma}
 
-# --- TÍN HIỆU (HARDCORE MODE - KHÓ TÍNH) ---
+# --- TÍN HIỆU (HARDCORE MODE) ---
 def kiem_tra_tin_hieu(opens, highs, lows, closes, volumes, inds):
     if len(closes) < 30: return None, 0, 0, ""
     
@@ -182,41 +182,36 @@ def kiem_tra_tin_hieu(opens, highs, lows, closes, volumes, inds):
     sl, tp = 0, 0
     ly_do = ""
 
-    # Setup 1: VWAP Pullback (QUAY LẠI CHẾ ĐỘ 3 ĐIỀU KIỆN)
-    # Điều kiện:
-    # 1. Chạm cực sát VWAP (0.1%)
-    # 2. RSI chuẩn form (40-55)
-    # 3. Volume > Trung bình (Tiền phải vào)
-    
+    # Setup 1: VWAP Pullback (Hardcore: Chạm 0.1% + RSI hẹp + Vol to)
     if p_close > vwap: 
-        if (p_low <= vwap * 1.001) and (p_close > p_open): # Chạm sát + Nến xanh
-            if (40 <= rsi <= 55) and (vol_now > vol_avg): # RSI đẹp + Vol to
+        if (p_low <= vwap * 1.001) and (p_close > p_open): 
+            if (40 <= rsi <= 55) and (vol_now > vol_avg): 
                 tin_hieu = "LONG (VWAP Pullback) 🟢"
                 ly_do = "Trend Lên + Chạm VWAP + Vol tốt"
-                # SL 0.3% (Giữ nguyên cái bạn thích)
+                # SL 0.3%
                 sl = min(p_low, vwap) * 0.997 
                 # TP x2.0
                 tp = p_close + (p_close - sl) * 2.0
 
     elif p_close < vwap: 
-        if (p_high >= vwap * 0.999) and (p_close < p_open): # Chạm sát + Nến đỏ
-            if (45 <= rsi <= 60) and (vol_now > vol_avg): # RSI đẹp + Vol to
+        if (p_high >= vwap * 0.999) and (p_close < p_open): 
+            if (45 <= rsi <= 60) and (vol_now > vol_avg): 
                 tin_hieu = "SHORT (VWAP Pullback) 🔴"
                 ly_do = "Trend Xuống + Chạm VWAP + Vol tốt"
                 sl = max(p_high, vwap) * 1.003
                 tp = p_close - (sl - p_close) * 2.0
 
-    # Setup 2: BB Bounce (Cũng phải có Volume mới chơi)
+    # Setup 2: BB Bounce (Hardcore: Vol to)
     if not tin_hieu:
         if (p_low <= bb_lower) and (p_close > bb_lower) and (p_close > p_open):
-            if (rsi <= 35) and (vol_now > vol_avg): # Thêm điều kiện Vol
+            if (rsi <= 35) and (vol_now > vol_avg): 
                 tin_hieu = "LONG (BB Bounce) 🟢"
                 ly_do = "Chạm Band Dưới + RSI quá bán + Vol tốt"
                 sl = p_low * 0.997
                 tp = p_close + (p_close - sl) * 2.0 
 
         elif (p_high >= bb_upper) and (p_close < bb_upper) and (p_close < p_open):
-            if (rsi >= 65) and (vol_now > vol_avg): # Thêm điều kiện Vol
+            if (rsi >= 65) and (vol_now > vol_avg): 
                 tin_hieu = "SHORT (BB Bounce) 🔴"
                 ly_do = "Chạm Band Trên + RSI quá mua + Vol tốt"
                 sl = p_high * 1.003
@@ -224,7 +219,7 @@ def kiem_tra_tin_hieu(opens, highs, lows, closes, volumes, inds):
 
     return tin_hieu, sl, tp, ly_do
 
-# --- BACKTEST (CẬP NHẬT LOGIC HARDCORE) ---
+# --- BACKTEST (HARDCORE) ---
 def process_backtest(chat_id, symbol, start_capital, days):
     try:
         opens, highs, lows, closes, vols, count = lay_data_lich_su(symbol, days=days)
@@ -279,7 +274,6 @@ def process_backtest(chat_id, symbol, start_capital, days):
             v_now = vols[i]
             v_avg = inds['vol_sma'][i]
             
-            # Logic Hardcore (3 điều kiện)
             if (p_c > vwap) and (p_l <= vwap * 1.001) and (p_c > p_o) and (40 <= rsi <= 55) and (v_now > v_avg):
                 sl = min(p_l, vwap) * 0.997
                 tp = p_c + (p_c - sl) * 2.0
@@ -467,7 +461,7 @@ def monitor_thread(chat_id):
         except Exception as e:
             time.sleep(10)
 
-# --- BOT COMMANDS ---
+# --- BOT COMMANDS (THÊM RESET VÀO HELP) ---
 @bot.message_handler(commands=['start', 'help'])
 def send_help(message):
     user = get_user_data(message.chat.id)
@@ -491,6 +485,7 @@ def send_help(message):
         "      - VD: `/Auto BTC ETH`\n\n"
         "📊 **4. TIỆN ÍCH KHÁC:**\n"
         "   👉 `Thong ke`: Xem tỷ lệ thắng/thua.\n"
+        "   👉 `Reset thong ke`: Xóa sạch lịch sử Win/Loss (MỚI).\n"
         "   👉 `Xem theo doi`: Xem danh sách đang canh.\n"
         "   👉 `Dung`: Dừng tất cả (Cả Auto và Theo doi).\n"
         "   👉 Nhập tên Coin bất kỳ (VD: `PEPE`) để xem Chart.\n\n"
@@ -606,11 +601,20 @@ def handle_msg(message):
         user['auto_watching'] = [] 
         bot.reply_to(message, "🛑 Đã dừng tất cả (Auto & Theo dõi).")
         return
+    
+    # --- LOGIC RESET THỐNG KÊ (THÊM MỚI Ở ĐÂY) ---
     if text in ["THONG KE", "THỐNG KÊ"]:
         w, l = user['stats']['wins'], user['stats']['losses']
         rate = w/(w+l)*100 if (w+l)>0 else 0
         bot.reply_to(message, f"📊 Win: {w} | Loss: {l} ({rate:.1f}%)")
         return
+    
+    if text in ["RESET THONG KE", "RESET THỐNG KÊ"]:
+        user['stats'] = {'wins': 0, 'losses': 0}
+        bot.reply_to(message, "♻️ Đã reset thống kê Win/Loss về 0.")
+        return
+    # --------------------------------------------
+
     if text in ["XEM THEO DOI", "LIST"]:
         msg = ""
         if user['watching']: msg += f"📋 Theo dõi (1 lần): {', '.join(user['watching'])}\n"
@@ -645,6 +649,6 @@ def handle_msg(message):
         else:
              bot.edit_message_text("❌ Không tìm thấy.", chat_id, msg.message_id)
 
-print("🤖 BOT SIGNAL ĐANG CHẠY (HARDCORE MODE)...")
+print("🤖 BOT SIGNAL ĐANG CHẠY (HARDCORE + RESET)...")
 keep_alive()
 bot.infinity_polling()
