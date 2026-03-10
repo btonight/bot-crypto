@@ -47,30 +47,35 @@ def lay_ty_gia_remitano():
     except: pass
     return 26000
 
-# --- LẤY DATA BINANCE (CHỐNG CHẶN 5 CỔNG) ---
+# --- LẤY DATA BINANCE (CHUYỂN SANG CỔNG FUTURES CHỐNG BLOCK) ---
 def lay_data_binance(symbol, limit=500):
+    # Đưa cổng Futures (fapi) lên đầu tiên vì nó không chặn IP Render
     NODES = [
-        "https://api.binance.com", 
-        "https://api1.binance.com",
-        "https://api2.binance.com",
-        "https://api3.binance.com",
-        "https://data-api.binance.vision"
+        "https://fapi.binance.com/fapi/v1/klines", # VŨ KHÍ BÍ MẬT 
+        "https://api.binance.com/api/v3/klines", 
+        "https://api1.binance.com/api/v3/klines",
+        "https://api2.binance.com/api/v3/klines",
+        "https://data-api.binance.vision/api/v3/klines"
     ]
     pair = symbol.upper() + "USDT"
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
 
-    for node in NODES:
+    for url_base in NODES:
         try:
-            url = f"{node}/api/v3/klines?symbol={pair}&interval=1m&limit={limit}"
-            data = requests.get(url, headers=headers, timeout=2).json()
+            url = f"{url_base}?symbol={pair}&interval=1m&limit={limit}"
+            # Tăng timeout lên 5 giây để tránh lỗi ngắt kết nối
+            data = requests.get(url, headers=headers, timeout=5).json()
             if isinstance(data, list) and len(data) > 0:
                 opens = [float(x[1]) for x in data]
                 highs = [float(x[2]) for x in data]
                 lows = [float(x[3]) for x in data]
                 closes = [float(x[4]) for x in data]
                 volumes = [float(x[5]) for x in data]
-                return np.array(opens), np.array(highs), np.array(lows), np.array(closes), np.array(volumes), "Binance"
-        except: continue
+                src_name = "Binance Futures ⚡" if "fapi" in url_base else "Binance Spot"
+                return np.array(opens), np.array(highs), np.array(lows), np.array(closes), np.array(volumes), src_name
+        except Exception as e: 
+            print(f"Lỗi cổng {url_base}: {e}")
+            continue
     return None, None, None, None, None, None
 
 def lay_data_lich_su(symbol, days=7):
@@ -85,7 +90,8 @@ def lay_data_lich_su(symbol, days=7):
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         
         for _ in range(rounds):
-            url = f"https://api.binance.com/api/v3/klines?symbol={pair}&interval=1m&limit={limit_per_req}&endTime={end_time}"
+            # Backtest cũng dùng cổng Futures luôn
+            url = f"https://fapi.binance.com/fapi/v1/klines?symbol={pair}&interval=1m&limit={limit_per_req}&endTime={end_time}"
             data = requests.get(url, headers=headers, timeout=5).json()
             if not isinstance(data, list) or len(data) == 0: break
             
@@ -225,7 +231,7 @@ def process_backtest(chat_id, symbol, start_capital, days):
     try:
         opens, highs, lows, closes, vols, count = lay_data_lich_su(symbol, days=days)
         if closes is None or len(closes) < 100:
-            bot.send_message(chat_id, f"❌ Không tải được dữ liệu.")
+            bot.send_message(chat_id, f"❌ Không tải được dữ liệu (Có thể do lỗi mạng).")
             return
 
         inds = calculate_indicators(closes, highs, lows, vols)
@@ -393,7 +399,7 @@ def execute_trade(chat_id, symbol, tin_hieu, ly_do, entry, sl, tp, is_auto=False
 
 # --- MONITOR 24/7 ---
 def monitor_thread(chat_id):
-    bot.send_message(chat_id, "🤖 Bot bắt đầu canh lệnh 24/7 (Đã fix triệt để lỗi spam)...")
+    bot.send_message(chat_id, "🤖 Bot bắt đầu canh lệnh 24/7 (Đã Fix Chặn IP & Chống Lặp)...")
     while True:
         try: 
             user = get_user_data(chat_id)
@@ -656,6 +662,6 @@ def handle_msg(message):
         else:
              bot.edit_message_text("❌ Không tìm thấy.", chat_id, msg.message_id)
 
-print("🤖 BOT SIGNAL ĐANG CHẠY (BẢN CHUẨN MỚI NHẤT)...")
+print("🤖 BOT SIGNAL ĐANG CHẠY (FUTURES API - VƯỢT TƯỜNG LỬA)...")
 keep_alive()
 bot.infinity_polling()
