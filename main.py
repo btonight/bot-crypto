@@ -13,7 +13,6 @@ from keep_alive import keep_alive
 plt.switch_backend('Agg') 
 
 # --- CẤU HÌNH ---
-# Tự động lấy Token của bạn
 API_TOKEN = os.environ.get('BOT_TOKEN')
 if not API_TOKEN:
     API_TOKEN = '7964594688:AAGPv7UiXdhm0O3mLjRoOxMDNJbrS3vEAmM'
@@ -83,9 +82,11 @@ def lay_data_lich_su(symbol, days=7):
         all_open, all_high, all_low, all_close, all_vol = [], [], [], [], []
         end_time = int(time.time() * 1000) 
         
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        
         for _ in range(rounds):
             url = f"https://api.binance.com/api/v3/klines?symbol={pair}&interval=1m&limit={limit_per_req}&endTime={end_time}"
-            data = requests.get(url, timeout=5).json()
+            data = requests.get(url, headers=headers, timeout=5).json()
             if not isinstance(data, list) or len(data) == 0: break
             
             opens = [float(x[1]) for x in data]
@@ -655,6 +656,6 @@ def handle_msg(message):
         else:
              bot.edit_message_text("❌ Không tìm thấy.", chat_id, msg.message_id)
 
-print("🤖 BOT SIGNAL ĐANG CHẠY (BẢN HOÀN THIỆN NHẤT)...")
+print("🤖 BOT SIGNAL ĐANG CHẠY (BẢN CHUẨN MỚI NHẤT)...")
 keep_alive()
 bot.infinity_polling()
