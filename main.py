@@ -31,8 +31,8 @@ def get_user_data(chat_id):
         USER_DATA[chat_id] = {
             'balance': 500000,    
             'bet_amount': 50000,  
-            'is_all_in': False,   # Cờ cược All-in
-            'currency': 'VNDC',   # Mặc định xài VNDC, có thể đổi sang USDT
+            'is_all_in': False,   
+            'currency': 'VNDC',   
             'watching': [],       
             'auto_watching': [],  
             'active_trades': {},
@@ -236,7 +236,7 @@ def process_backtest(chat_id, symbol, start_capital, days):
 
         inds = calculate_indicators(closes, highs, lows, vols)
         balance = start_capital
-        leverage = 30 # Đã nâng lên x30
+        leverage = 30 # x30
         wins = 0
         losses = 0
         active_trade = None
@@ -268,7 +268,7 @@ def process_backtest(chat_id, symbol, start_capital, days):
                     active_trade = None
                 continue
             
-            if balance <= (start_capital * 0.05): break # Gần cháy thì ngưng
+            if balance <= (start_capital * 0.05): break 
             
             p_c = closes[i]
             p_o = opens[i]
@@ -353,7 +353,7 @@ def ve_chart(symbol, prices, inds):
     plt.close()
     return buf
 
-# --- EXECUTE ---
+# --- CÁC HÀM SCAN, TRADE, MONITOR ---
 def scan_market(chat_id):
     bot.send_message(chat_id, "📡 **Đang quét tín hiệu (Hardcore + Vol)...**", parse_mode="Markdown")
     signals = []
@@ -369,10 +369,9 @@ def scan_market(chat_id):
 def execute_trade(chat_id, symbol, tin_hieu, ly_do, entry, sl, tp):
     user = get_user_data(chat_id)
     if user['balance'] <= 0:
-        bot.send_message(chat_id, "❌ **Hết tiền Demo rồi!**")
+        bot.send_message(chat_id, "❌ **Hết tiền Demo rồi! Vui lòng nạp thêm vốn bằng lệnh /Von**")
         return
     
-    # Xử lý Cược All-in hoặc Cược thường
     if user.get('is_all_in', False):
         trade_amount = user['balance']
         note = " (ALL-IN 🔥)"
@@ -389,7 +388,7 @@ def execute_trade(chat_id, symbol, tin_hieu, ly_do, entry, sl, tp):
     user['active_trades'][symbol] = {
         'type': 'LONG' if 'LONG' in tin_hieu else 'SHORT',
         'entry': entry, 'sl': sl, 'tp': tp, 
-        'amount': trade_amount, 'leverage': 30 # Đòn bẩy x30
+        'amount': trade_amount, 'leverage': 30 
     }
     
     global TY_GIA_USDT_CACHE
@@ -405,9 +404,9 @@ def execute_trade(chat_id, symbol, tin_hieu, ly_do, entry, sl, tp):
     )
     bot.send_message(chat_id, msg, parse_mode="Markdown")
 
-# --- MONITOR 24/7 ---
+# --- MONITOR 24/7 (ĐÃ FIX LỖI TREO TP/SL) ---
 def monitor_thread(chat_id):
-    bot.send_message(chat_id, "🤖 Bot bắt đầu canh lệnh 24/7 (Bảo vệ x30)...")
+    bot.send_message(chat_id, "🤖 Bot bắt đầu canh lệnh 24/7 (Đã fix lỗi treo PNL)...")
     while True:
         try: 
             user = get_user_data(chat_id)
@@ -440,34 +439,53 @@ def monitor_thread(chat_id):
                             execute_trade(chat_id, symbol, tin_hieu, ly_do, closes[-1], sl, tp)
                 except Exception as e: pass
             
+            # KIỂM TRA TP/SL BẰNG RÂU NẾN (HIGH/LOW) CHUẨN XÁC NHẤT
             active_symbols = list(user['active_trades'].keys())
             for symbol in active_symbols:
                 try:
                     trade = user['active_trades'][symbol]
-                    _, _, _, closes, _, _ = lay_data_binance(symbol)
+                    _, highs, lows, closes, _, _ = lay_data_binance(symbol)
                     if closes is not None:
-                        curr = closes[-1]
+                        curr_h = highs[-1]
+                        curr_l = lows[-1]
+                        curr_c = closes[-1]
+                        
+                        hit_tp = False
+                        hit_sl = False
+                        
                         if trade['type'] == 'LONG':
-                            hit_tp, hit_sl = curr >= trade['tp'], curr <= trade['sl']
-                            move = (curr - trade['entry']) / trade['entry']
+                            if curr_h >= trade['tp']: hit_tp = True
+                            if curr_l <= trade['sl']: hit_sl = True
                         else: 
-                            hit_tp, hit_sl = curr <= trade['tp'], curr >= trade['sl']
-                            move = (trade['entry'] - curr) / trade['entry']
+                            if curr_l <= trade['tp']: hit_tp = True
+                            if curr_h >= trade['sl']: hit_sl = True
                         
                         if hit_tp or hit_sl:
+                            # Ưu tiên dính SL nếu cùng chạm trong 1 nến
+                            if hit_tp and hit_sl: hit_tp = False
+                            
+                            close_price = trade['tp'] if hit_tp else trade['sl']
+                            
+                            if trade['type'] == 'LONG':
+                                move = (close_price - trade['entry']) / trade['entry']
+                            else: 
+                                move = (trade['entry'] - close_price) / trade['entry']
+                            
                             pnl = move * trade['leverage'] * trade['amount']
+                            
+                            # Cập nhật số dư trước khi gửi tin nhắn chống lỗi
                             user['balance'] += (trade['amount'] + pnl)
                             ket_qua = "WIN 🟢" if hit_tp else "LOSS 🔴"
                             if hit_tp: user['stats']['wins'] += 1
                             else: user['stats']['losses'] += 1
                             
-                            # ĐÃ SỬA CHUẨN XÁC LỖI LẶP: Lấy trạng thái auto từ list, không lưu trong trade
                             is_auto_trade = (symbol in user['auto_watching'])
                             auto_msg = "\n🔄 Đang quét kèo mới tiếp..." if is_auto_trade else "\n🏁 Đã dừng theo dõi."
-                            
                             pnl_sign = "+" if pnl >= 0 else ""
+                            
                             msg_to_send = f"🔔 **KẾT THÚC {symbol}: {ket_qua}**\nLãi/Lỗ: {pnl_sign}{fmt_money(pnl, user['currency'])}\n💰 Vốn mới: {fmt_money(user['balance'], user['currency'])}{auto_msg}"
                             
+                            # Xóa khỏi danh sách theo dõi thực và báo cáo
                             del user['active_trades'][symbol]
                             bot.send_message(chat_id, msg_to_send, parse_mode="Markdown")
                 except: pass
@@ -476,12 +494,13 @@ def monitor_thread(chat_id):
         except Exception as e:
             time.sleep(10)
 
-# --- BỘ CHẶN AN TOÀN KHI ALL-IN ---
-def check_all_in_safety(user, message, new_coins_count=1):
+# --- BỘ CHẶN AN TOÀN KHI ALL-IN ĐÃ ĐƯỢC TỐI ƯU HÓA ---
+def check_all_in_safety(user, message, coins_to_add=[]):
     if user.get('is_all_in', False):
-        total_tracking = len(user['active_trades']) + len(user['watching']) + len(user['auto_watching'])
-        if (total_tracking + new_coins_count) > 1:
-            bot.reply_to(message, "⚠️ **TỪ CHỐI LỆNH:** Bạn đang bật chế độ `Cuoc all`. Tránh cháy ví, bạn CHỈ ĐƯỢC canh/đánh 1 coin duy nhất. Hãy gõ `Dung` để xóa list trước khi theo dõi coin mới!")
+        current_coins = set(list(user['active_trades'].keys()) + user['watching'] + user['auto_watching'])
+        new_total = len(current_coins.union(set(coins_to_add)))
+        if new_total > 1:
+            bot.reply_to(message, "⚠️ **TỪ CHỐI LỆNH:** Bạn đang bật chế độ `Cuoc all`. Tránh kẹt vốn, bạn CHỈ ĐƯỢC canh/đánh 1 coin duy nhất. Hãy gõ `Dung` để xóa list trước khi canh coin mới!")
             return False
     return True
 
@@ -531,7 +550,7 @@ def handle_auto(message):
         chat_id = message.chat.id
         user = get_user_data(chat_id)
         
-        if not check_all_in_safety(user, message, len(coins)): return
+        if not check_all_in_safety(user, message, coins): return
 
         added = []
         for c in coins:
@@ -557,10 +576,8 @@ def handle_msg(message):
     chat_id = message.chat.id
     user = get_user_data(chat_id)
     
-    # 1. CÀI ĐẶT VỐN MỚI
     if text.startswith("VON ") or text.startswith("VỐN "):
         parts = text.split()
-        # Chế độ: VON USDT 100
         if len(parts) >= 3 and parts[1] in ["VNDC", "USDT"]:
             curr = parts[1]
             try:
@@ -570,7 +587,6 @@ def handle_msg(message):
                 bot.reply_to(message, f"✅ Đã set lại ví mới: **{curr}**\n💰 Vốn: **{fmt_money(val, curr)}**\n⚠️ Hãy cài lại số cược (`/Cuoc`) cho phù hợp nhé!", parse_mode="Markdown")
             except: pass
             return
-        # Chế độ cũ: VON 500000
         elif len(parts) == 2:
             try:
                 val = float(parts[1].replace(',', ''))
@@ -579,7 +595,6 @@ def handle_msg(message):
             except: pass
             return
 
-    # 2. CHUYỂN ĐỔI VÍ ĐANG CÓ
     if text.startswith("CHUYEN ") or text.startswith("CHUYỂN "):
         parts = text.split()
         if len(parts) >= 2:
@@ -597,7 +612,6 @@ def handle_msg(message):
                 bot.reply_to(message, f"💱 Đã CHUYỂN ĐỔI ví thành công sang **{target_curr}**.\n💰 Vốn hiện hành: **{fmt_money(user['balance'], target_curr)}**\n💵 Cược hiện hành: **{'ALL-IN' if user['is_all_in'] else fmt_money(user['bet_amount'], target_curr)}**", parse_mode="Markdown")
             return
 
-    # 3. CÀI ĐẶT CƯỢC / CƯỢC ALL
     if text.startswith("CUOC ") or text.startswith("CƯỢC "):
         parts = text.split()
         if len(parts) >= 2:
@@ -632,7 +646,6 @@ def handle_msg(message):
                 return
             symbol = match.group(0)
             
-            # Setup số vốn mặc định cho backtest tuỳ theo ví đang xài
             cap = 500000 if user['currency'] == 'VNDC' else 100
             if "VON" in text:
                 nums = re.findall(r'\d+', text.split("VON")[1])
@@ -646,7 +659,7 @@ def handle_msg(message):
 
     if text.startswith("ENTRY NOW"):
         symbol = text.replace("ENTRY NOW", "").replace("(", "").replace(")", "").strip()
-        if not check_all_in_safety(user, message, 1): return
+        if not check_all_in_safety(user, message, [symbol]): return
 
         opens, highs, lows, closes, vols, _ = lay_data_binance(symbol)
         if closes is None: return
@@ -678,7 +691,7 @@ def handle_msg(message):
         coins = text.replace("THEO DOI", "").replace(",", " ").split()
         valid = [c.strip().upper() for c in coins if c.strip()][:5]
         if valid:
-            if not check_all_in_safety(user, message, len(valid)): return
+            if not check_all_in_safety(user, message, valid): return
             
             user['watching'] = valid
             for coin in valid:
@@ -690,11 +703,10 @@ def handle_msg(message):
                 threading.Thread(target=monitor_thread, args=(chat_id,), daemon=True).start()
         return
     
-    # KHI ẤN /AUTO KHÔNG DẤU GẠCH CHÉO
     if text.startswith("AUTO "):
         coins = text.replace("AUTO", "").strip().upper().replace(",", " ").split()
         if not coins: return
-        if not check_all_in_safety(user, message, len(coins)): return
+        if not check_all_in_safety(user, message, coins): return
         
         added = []
         for c in coins:
@@ -762,6 +774,6 @@ def handle_msg(message):
         else:
              bot.edit_message_text("❌ Không tìm thấy.", chat_id, msg.message_id)
 
-print("🤖 BOT SIGNAL ĐANG CHẠY (BẢN CHUẨN X30 + ALL IN + ĐA VÍ)...")
+print("🤖 BOT SIGNAL ĐANG CHẠY (BẢN CHUẨN X30 + FIX CHỐT LỜI/CẮT LỖ)...")
 keep_alive()
 bot.infinity_polling()
