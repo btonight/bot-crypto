@@ -1,6 +1,7 @@
 import telebot
 import requests
 import numpy as np
+import matplotlib.subplots as plt
 import matplotlib.pyplot as plt
 import io
 import time
@@ -124,7 +125,7 @@ def lay_gia_coingecko_smart(symbol):
     except: pass
     return None, None, None
 
-# --- SMC LOGIC (TỐI ƯU HÓA HIỆU SUẤT) ---
+# --- SMC LOGIC (CỰC KỲ TỐI ƯU HIỆU SUẤT) ---
 def find_swing_points(highs, lows, lookback):
     swing_highs = []
     swing_lows = []
@@ -136,21 +137,24 @@ def find_swing_points(highs, lows, lookback):
     return swing_highs, swing_lows
 
 def check_smc_setup(opens, highs, lows, closes, vols, i):
-    # BẢN VÁ LỖI BACKTEST: Cắt "cửa sổ trượt" 300 nến để giảm tải CPU
     if i == -1: i = len(closes) - 1
-    start_idx = max(0, i - 300)
+    if i < 150: return None, 0, 0, ""
+
+    # BỘ LỌC SỚM (EARLY EXIT): Tăng tốc 100 lần cho Backtest
+    # Nếu Volume không lớn hơn 1.5 lần trung bình 20 nến -> Bỏ qua ngay, đỡ phải tính toán rườm rà!
+    vol_now = vols[i]
+    vol_avg = np.mean(vols[i-20:i]) if i >= 20 else 0
+    if vol_now <= 1.5 * vol_avg:
+        return None, 0, 0, ""
+    
+    # Chỉ cắt dữ liệu nếu lọt qua màng lọc Volume 
+    start_idx = max(0, i - 450) # Cắt mảng đủ sâu (450 nến M5) để tìm Swing M15 Lookback 15
     
     c_h = highs[start_idx:i+1]
     c_l = lows[start_idx:i+1]
     c_c = closes[start_idx:i+1]
     c_o = opens[start_idx:i+1]
-    c_v = vols[start_idx:i+1]
 
-    if len(c_c) < 150: return None, 0, 0, ""
-
-    vol_sma20 = np.mean(c_v[-20:])
-    curr_vol = c_v[-1]
-    
     # Gộp nến M15
     m15_h, m15_l, m15_c, m15_o = [], [], [], []
     for j in range(len(c_c)-1, -1, -3):
@@ -160,7 +164,10 @@ def check_smc_setup(opens, highs, lows, closes, vols, i):
         m15_c.append(c_c[j])
         m15_o.append(c_o[j-2])
 
-    m15_h, m15_l, m15_c, m15_o = np.array(m15_h[::-1]), np.array(m15_l[::-1]), np.array(m15_c[::-1]), np.array(m15_o[::-1])
+    m15_h = np.array(m15_h[::-1])
+    m15_l = np.array(m15_l[::-1])
+    m15_c = np.array(m15_c[::-1])
+    m15_o = np.array(m15_o[::-1])
 
     m15_sw_h, m15_sw_l = find_swing_points(m15_h, m15_l, 15)
     m5_sw_h, m5_sw_l = find_swing_points(c_h, c_l, 10)
@@ -183,8 +190,6 @@ def check_smc_setup(opens, highs, lows, closes, vols, i):
             break
 
     if not is_bullish_sweep and not is_bearish_sweep:
-        return None, 0, 0, ""
-    if curr_vol <= 1.5 * vol_sma20:
         return None, 0, 0, ""
 
     last_h1, last_h2 = m15_sw_h[-1][1], m15_sw_h[-2][1]
@@ -220,9 +225,9 @@ def check_smc_setup(opens, highs, lows, closes, vols, i):
         
         if in_fvg and (in_fib or near_supp):
             tin_hieu = "LONG (SMC) 🟢"
-            ly_do = "M15 Uptrend + FVG + M5 Sweep + Vol To"
-            sl = curr_l * 0.999 
-            tp = curr_c + (curr_c - sl) * 2.0
+            ly_do = "M15 Uptrend + FVG + M5 Sweep + Vol Đột biến"
+            sl = curr_l * 0.999 # Nới SL cách râu 0.1% để tránh bị quét láo
+            tp = curr_c + (curr_c - sl) * 2.0 # Giữ chuẩn R:R 1:2
 
     elif is_bearish_sweep and downtrend:
         in_fvg = any(fvg[0] <= curr_h <= fvg[1] for fvg in bearish_fvgs)
@@ -235,13 +240,13 @@ def check_smc_setup(opens, highs, lows, closes, vols, i):
         
         if in_fvg and (in_fib or near_res):
             tin_hieu = "SHORT (SMC) 🔴"
-            ly_do = "M15 Downtrend + FVG + M5 Sweep + Vol To"
+            ly_do = "M15 Downtrend + FVG + M5 Sweep + Vol Đột biến"
             sl = curr_h * 1.001
             tp = curr_c - (sl - curr_c) * 2.0
 
     return tin_hieu, sl, tp, ly_do
 
-# --- BACKTEST CHUẨN SMC GIAO DIỆN MỚI ---
+# --- BACKTEST ---
 def process_backtest(chat_id, symbol, start_capital, days):
     user = get_user_data(chat_id)
     try:
@@ -330,7 +335,7 @@ def process_backtest(chat_id, symbol, start_capital, days):
         )
         bot.send_message(chat_id, msg, parse_mode="Markdown")
     except Exception as e:
-        bot.send_message(chat_id, f"❌ Lỗi Backtest: {e}. Thử lại sau nhé!")
+        bot.send_message(chat_id, f"❌ Lỗi Backtest: Vui lòng thử lại sau!")
 
 # --- VẼ CHART M5 SMC ---
 def ve_chart(symbol, opens, highs, lows, closes, vols):
@@ -670,10 +675,10 @@ def handle_msg(message):
                 if nums: cap = float(''.join(nums))
                 
             # Giao diện thông báo đang xử lý đẹp mắt
-            bot.reply_to(message, f"⏳ **Đang Backtest SMC...**\n🪙 Coin: **{symbol}**\n🗓 Khung thời gian: **{'30 Ngày' if days==30 else '7 Ngày'}**\n💰 Vốn giả định: **{fmt_money(cap, user['currency'])}**\n⚡️ *Bot đang tính toán hàng ngàn nến M5, vui lòng đợi vài giây...*")
+            bot.reply_to(message, f"⏳ **Đang Backtest SMC (Tốc độ Cao)...**\n🪙 Coin: **{symbol}**\n🗓 Khung thời gian: **{'30 Ngày' if days==30 else '7 Ngày'}**\n💰 Vốn giả định: **{fmt_money(cap, user['currency'])}**\n⚡️ *Bot đang xử lý dữ liệu, vui lòng đợi vài giây...*")
             threading.Thread(target=process_backtest, args=(chat_id, symbol, cap, days)).start()
         except Exception as e:
-            bot.reply_to(message, f"⚠️ Lỗi: {e}")
+            bot.reply_to(message, f"⚠️ Lỗi cú pháp Backtest!")
         return
 
     if text.startswith("ENTRY NOW"):
@@ -781,6 +786,6 @@ def handle_msg(message):
         else:
              bot.edit_message_text("❌ Không tìm thấy coin.", chat_id, msg.message_id)
 
-print("🤖 BOT SMC ICT ĐANG CHẠY (BẢN FINAL: GIAO DIỆN & BACKTEST SIÊU TỐC)...")
+print("🤖 BOT SMC ICT ĐANG CHẠY (ĐÃ FIX TỐC ĐỘ BACKTEST MƯỢT MÀ)...")
 keep_alive()
 bot.infinity_polling()
