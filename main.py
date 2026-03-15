@@ -1,7 +1,6 @@
 import telebot
 import requests
 import numpy as np
-import matplotlib.subplots as plt
 import matplotlib.pyplot as plt
 import io
 import time
@@ -312,7 +311,6 @@ def process_backtest(chat_id, symbol, start_capital, days):
         if balance < (start_capital * 0.05): emoji = "💀 CHÁY TÀI KHOẢN"
         pnl_sign = "+" if pnl_total >= 0 else ""
 
-        # Giao diện Backtest nâng cấp đẹp mắt hơn
         msg = (
             f"📊 **BÁO CÁO BACKTEST SMC ICT** 📊\n"
             f"🪙 **Coin:** {symbol} (Khung M5/M15)\n"
