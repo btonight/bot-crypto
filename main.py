@@ -19,16 +19,18 @@ if not API_TOKEN:
 
 bot = telebot.TeleBot(API_TOKEN)
 
+# DANH SÁCH COIN
 WATCHLIST_MARKET = ['BTC', 'ETH', 'BNB', 'SOL', 'XRP', 'DOGE', 'ADA', 'AVAX', 'LINK', 'LTC', 'DOT', 'MATIC', 'TRX', 'SHIB', 'NEAR', 'PEPE', 'WIF', 'BONK', 'ARB', 'OP', 'SUI', 'APT', 'FIL', 'ATOM', 'FTM', 'SAND']
 
 USER_DATA = {}
 TY_GIA_USDT_CACHE = 26000 
 
+# --- HÀM HỖ TRỢ ---
 def get_user_data(chat_id):
     if chat_id not in USER_DATA:
         USER_DATA[chat_id] = {
             'balance': 500000,    
-            'bet_amount': 50000,  # Ít dùng vì SMC auto 1% risk
+            'bet_amount': 50000,  
             'is_all_in': False,   
             'currency': 'VNDC',   
             'watching': [],       
@@ -52,7 +54,7 @@ def lay_ty_gia_remitano():
     except: pass
     return 26000
 
-# --- LẤY DATA BINANCE M5 ---
+# --- LẤY DATA BINANCE FUTURES (CHỐNG CHẶN) ---
 def lay_data_binance(symbol, limit=500):
     NODES = [
         "https://fapi.binance.com/fapi/v1/klines", 
@@ -111,7 +113,22 @@ def lay_data_lich_su(symbol, days=7):
     except: pass
     return None, None, None, None, None, 0
 
-# --- SMC ANALYSIS LOGIC ---
+def lay_gia_coingecko_smart(symbol):
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        search_url = f"https://api.coingecko.com/api/v3/search?query={symbol}"
+        res = requests.get(search_url, headers=headers, timeout=5).json()
+        if 'coins' in res and len(res['coins']) > 0:
+            coin = res['coins'][0]
+            coin_id = coin['id']
+            sym = coin['symbol'].upper()
+            price_url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd"
+            pres = requests.get(price_url, headers=headers, timeout=5).json()
+            if coin_id in pres: return pres[coin_id]['usd'], "CoinGecko", sym
+    except: pass
+    return None, None, None
+
+# --- SMC LOGIC ---
 def find_swing_points(highs, lows, lookback):
     swing_highs = []
     swing_lows = []
@@ -123,20 +140,17 @@ def find_swing_points(highs, lows, lookback):
     return swing_highs, swing_lows
 
 def check_smc_setup(opens, highs, lows, closes, vols, i):
-    # Chặn dữ liệu từ hiện tại trở về trước
     c_h = highs[:i+1]
     c_l = lows[:i+1]
     c_c = closes[:i+1]
     c_o = opens[:i+1]
     c_v = vols[:i+1]
 
-    if len(c_c) < 150: return None, 0, 0, "" # Cần đủ data
+    if len(c_c) < 150: return None, 0, 0, ""
 
-    # 1. Volume Check M5
     vol_sma20 = np.mean(c_v[-20:])
     curr_vol = c_v[-1]
     
-    # 2. Xây dựng Nến M15 từ M5 (Gộp 3 nến)
     m15_h, m15_l, m15_c, m15_o = [], [], [], []
     for j in range(len(c_c)-1, -1, -3):
         if j-2 < 0: break
@@ -147,7 +161,6 @@ def check_smc_setup(opens, highs, lows, closes, vols, i):
 
     m15_h, m15_l, m15_c, m15_o = np.array(m15_h[::-1]), np.array(m15_l[::-1]), np.array(m15_c[::-1]), np.array(m15_o[::-1])
 
-    # 3. Swing Points M15 (Lookback 15) & M5 (Lookback 10)
     m15_sw_h, m15_sw_l = find_swing_points(m15_h, m15_l, 15)
     m5_sw_h, m5_sw_l = find_swing_points(c_h, c_l, 10)
 
@@ -156,45 +169,38 @@ def check_smc_setup(opens, highs, lows, closes, vols, i):
 
     curr_h, curr_l, curr_c, curr_o = c_h[-1], c_l[-1], c_c[-1], c_o[-1]
 
-    # 4. Kiểm tra Liquidity Sweep M5 (Quét râu nhưng đóng nến rút chân)
     is_bullish_sweep = False
-    for _, val in m5_sw_l[-5:]: # Kiểm tra các đáy thanh khoản gần nhất
-        if curr_l < val and curr_c > val: # Thủng râu, đóng trên
+    for _, val in m5_sw_l[-5:]:
+        if curr_l < val and curr_c > val:
             is_bullish_sweep = True
             break
 
     is_bearish_sweep = False
     for _, val in m5_sw_h[-5:]:
-        if curr_h > val and curr_c < val: # Chọc râu lên, đóng dưới
+        if curr_h > val and curr_c < val:
             is_bearish_sweep = True
             break
 
-    # Nếu không có Quét Thanh Khoản Hoặc Volume Tạch -> Bỏ qua nhanh
     if not is_bullish_sweep and not is_bearish_sweep:
         return None, 0, 0, ""
     if curr_vol <= 1.5 * vol_sma20:
         return None, 0, 0, ""
 
-    # 5. Xác định Trend M15
     last_h1, last_h2 = m15_sw_h[-1][1], m15_sw_h[-2][1]
     last_l1, last_l2 = m15_sw_l[-1][1], m15_sw_l[-2][1]
     uptrend = (last_h1 > last_h2) and (last_l1 > last_l2)
     downtrend = (last_h1 < last_h2) and (last_l1 < last_l2)
 
-    # 6. Tính FVG M15
     atr_14 = np.mean(m15_h[-14:] - m15_l[-14:])
     bullish_fvgs, bearish_fvgs = [], []
     
-    # Quét 50 nến M15 gần nhất
     start_idx = max(0, len(m15_h) - 50)
     for j in range(start_idx, len(m15_h) - 2):
-        # Bullish FVG
         gap_up = m15_l[j+2] - m15_h[j]
         if gap_up > 0.5 * atr_14:
             filled = any(m15_l[k] < m15_h[j] for k in range(j+3, len(m15_h)))
             if not filled: bullish_fvgs.append((m15_h[j], m15_l[j+2]))
         
-        # Bearish FVG
         gap_down = m15_l[j] - m15_h[j+2]
         if gap_down > 0.5 * atr_14:
             filled = any(m15_h[k] > m15_l[j] for k in range(j+3, len(m15_h)))
@@ -202,37 +208,26 @@ def check_smc_setup(opens, highs, lows, closes, vols, i):
 
     tin_hieu, sl, tp, ly_do = None, 0, 0, ""
 
-    # --- SETUP LONG ---
     if is_bullish_sweep and uptrend:
-        # Hợp lưu FVG
         in_fvg = any(fvg[0] <= curr_l <= fvg[1] for fvg in bullish_fvgs)
-        
-        # Hợp lưu Support
         near_supp = any(abs(curr_l - l[1])/l[1] < 0.002 for l in m15_sw_l[-3:])
-        
-        # Hợp lưu Fib 0.618 - 0.786
         wave_l, wave_h = m15_sw_l[-1][1], m15_sw_h[-1][1]
         if m15_sw_l[-1][0] > m15_sw_h[-1][0]: wave_h = m15_sw_h[-2][1] if len(m15_sw_h)>1 else wave_h
-        
         fib_618 = wave_h - 0.618*(wave_h - wave_l)
         fib_786 = wave_h - 0.786*(wave_h - wave_l)
         in_fib = (fib_786 <= curr_l <= fib_618)
         
-        # Yêu cầu FVG + (Fib hoặc Support)
         if in_fvg and (in_fib or near_supp):
             tin_hieu = "LONG (SMC) 🟢"
             ly_do = "M15 Uptrend + FVG + M5 Liq Sweep + Vol Đột Biến"
-            sl = curr_l * 0.9995 # SL dưới râu quét 1 chút
-            tp = curr_c + (curr_c - sl) * 2.0 # R:R 1:2
+            sl = curr_l * 0.9995
+            tp = curr_c + (curr_c - sl) * 2.0
 
-    # --- SETUP SHORT ---
     elif is_bearish_sweep and downtrend:
         in_fvg = any(fvg[0] <= curr_h <= fvg[1] for fvg in bearish_fvgs)
         near_res = any(abs(curr_h - h[1])/h[1] < 0.002 for h in m15_sw_h[-3:])
-        
         wave_h, wave_l = m15_sw_h[-1][1], m15_sw_l[-1][1]
         if m15_sw_h[-1][0] > m15_sw_l[-1][0]: wave_l = m15_sw_l[-2][1] if len(m15_sw_l)>1 else wave_l
-        
         fib_618 = wave_l + 0.618*(wave_h - wave_l)
         fib_786 = wave_l + 0.786*(wave_h - wave_l)
         in_fib = (fib_618 <= curr_h <= fib_786)
@@ -292,7 +287,6 @@ def process_backtest(chat_id, symbol, start_capital, days):
             tin_hieu, sl, tp, ly_do = check_smc_setup(opens, highs, lows, closes, vols, i)
             
             if tin_hieu:
-                # Quản lý vốn 1% Risk
                 risk_amt = balance * 0.01
                 entry = closes[i]
                 dist_pct = abs(entry - sl) / entry
@@ -306,7 +300,7 @@ def process_backtest(chat_id, symbol, start_capital, days):
                 active_trade = {
                     'type': 'LONG' if 'LONG' in tin_hieu else 'SHORT',
                     'entry': entry, 'sl': sl, 'tp': tp, 
-                    'amount': margin_needed # Margin
+                    'amount': margin_needed 
                 }
 
         total_trades = wins + losses
@@ -344,10 +338,8 @@ def ve_chart(symbol, opens, highs, lows, closes, vols):
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 10), gridspec_kw={'height_ratios': [3, 2]})
     fig.tight_layout(pad=5.0)
 
-    # Chart Giá
     ax1.plot(p_c, color='black', alpha=0.8, label='M5 Price')
     
-    # Đánh dấu Liquidity Low/High gần nhất
     recent_l = np.min(lows[-15:])
     recent_h = np.max(highs[-15:])
     ax1.axhline(recent_l, color='red', linestyle='--', alpha=0.5, label='Liquidity Sweep Zone')
@@ -357,7 +349,6 @@ def ve_chart(symbol, opens, highs, lows, closes, vols):
     ax1.legend(loc='upper left')
     ax1.grid(True, alpha=0.2)
 
-    # Chart Volume
     colors = ['green' if closes[-view+i] > opens[-view+i] else 'red' for i in range(view)]
     ax2.bar(range(view), v_v, color=colors, alpha=0.6, label='Volume')
     ax2.plot(vol_sma, color='orange', label='Vol SMA 20')
@@ -388,13 +379,12 @@ def execute_trade(chat_id, symbol, tin_hieu, ly_do, entry, sl, tp):
         bot.send_message(chat_id, "❌ **Hết tiền Demo rồi! Vui lòng nạp thêm vốn bằng lệnh /Von**")
         return
     
-    # Quản lý rủi ro (Position Sizing SMC)
-    risk_amount = user['balance'] * 0.01 # Mặc định Risk 1%
+    risk_amount = user['balance'] * 0.01 
     dist_pct = abs(entry - sl) / entry
     if dist_pct == 0: dist_pct = 0.001
     
     pos_size = risk_amount / dist_pct
-    margin_needed = pos_size / 30 # Leverage x30
+    margin_needed = pos_size / 30 
     
     note = " (Risk 1% SMC)"
     
@@ -491,7 +481,7 @@ def monitor_thread(chat_id):
                             else: user['stats']['losses'] += 1
                             
                             is_auto_trade = (symbol in user['auto_watching'])
-                            auto_msg = "\n🔄 Tiếp tục rình mồi..." if is_auto_trade else "\n🏁 Đã dừng theo dõi."
+                            auto_msg = "\n🔄 Tiếp tục rình mồi SMC..." if is_auto_trade else "\n🏁 Đã dừng theo dõi."
                             pnl_sign = "+" if pnl >= 0 else ""
                             
                             msg_to_send = f"🔔 **CHỐT SMC {symbol}: {ket_qua}**\nLãi/Lỗ: {pnl_sign}{fmt_money(pnl, user['currency'])}\n💰 Vốn mới: {fmt_money(user['balance'], user['currency'])}{auto_msg}"
@@ -513,33 +503,39 @@ def check_all_in_safety(user, message, coins_to_add=[]):
             return False
     return True
 
-# --- BOT COMMANDS ---
+# --- BOT COMMANDS (GIAO DIỆN CHUẨN ĐÃ ĐƯỢC KHÔI PHỤC) ---
 @bot.message_handler(commands=['start', 'help'])
 def send_help(message):
     user = get_user_data(message.chat.id)
     help_text = (
         "📖 **HƯỚNG DẪN BOT SMC (SMART MONEY CONCEPTS)** 📖\n\n"
         "🛠 **1. CÀI ĐẶT VỐN & ĐA VÍ:**\n"
-        "   👉 `/Von VNDC 1000000`: Set vốn VNĐ.\n"
-        "   👉 `/Von USDT 50`: Set vốn USD.\n"
-        "   👉 `/Chuyen USDT` (hoặc VNDC): Tự động đổi số dư sang ví mới.\n"
-        "   👉 `/Cuoc all`: Đánh 100% vốn.\n"
-        "   ℹ️ *Mặc định Bot tự động đánh Risk 1% tài khoản chuẩn Quỹ.*\n\n"
-        "🧪 **2. BACKTEST SMC:**\n"
-        "   👉 `Backtest [Coin] Von [Tiền]`: Test 7 ngày.\n\n"
+        "   👉 `/Von VNDC 1000000`: Set vốn bằng VNĐ.\n"
+        "   👉 `/Von USDT 50`: Set vốn bằng USD.\n"
+        "   👉 `/Chuyen USDT` (hoặc VNDC): Tự động quy đổi số vốn ĐANG CÓ sang ví mới.\n"
+        "   👉 `/Cuoc 50000`: Cài tiền đi từng lệnh.\n"
+        "   👉 `/Cuoc all`: Đánh 100% vốn (Bot sẽ khóa chỉ cho theo dõi 1 coin để an toàn).\n"
+        "   👉 `Xem von`: Kiểm tra số dư hiện tại.\n"
+        "   ℹ️ *Mặc định Bot tự động tính vol lệnh Risk 1% tài khoản chuẩn Quỹ.*\n\n"
+        "🧪 **2. BACKTEST (KIỂM TRA QUÁ KHỨ):**\n"
+        "   👉 `Backtest [Coin] Von [Tiền]`: Test 7 ngày.\n"
+        "      - VD: `Backtest BTC Von 500000`\n"
+        "   👉 `Backtest 1 thang [Coin] Von [Tiền]`: Test 30 ngày.\n\n"
         "🚀 **3. SĂN KÈO SMC (M5/M15):**\n"
-        "   👉 `Entry now [Coin]`: Vào lệnh tay.\n"
-        "   👉 `Scan`: Quét 10 coin FVG/Liquidity.\n"
-        "   👉 `Theo doi [Coin]`: Canh tín hiệu -> Đánh -> Dừng.\n"
-        "   👉 `/Auto [Coin]`: Canh 24/7 (Săn thanh khoản liên tục).\n\n"
-        "📊 **4. TIỆN ÍCH:**\n"
-        "   👉 `Thong ke` / `Reset thong ke`.\n"
-        "   👉 `Xem theo doi` / `Dung`.\n"
-        "   👉 Nhập tên Coin để xem Chart M5 SMC.\n\n"
+        "   👉 `Entry now [Coin]`: Vào lệnh tay NGAY LẬP TỨC.\n"
+        "   👉 `Scan`: Quét 10 coin có tín hiệu FVG/Liquidity.\n"
+        "   👉 `Theo doi [Coin]`: Canh tín hiệu -> Vào lệnh -> Xong thì Dừng.\n"
+        "   👉 `/Auto [Coin]`: Canh tín hiệu -> Vào lệnh -> Xong thì Lặp lại 24/7.\n\n"
+        "📊 **4. TIỆN ÍCH KHÁC:**\n"
+        "   👉 `Thong ke`: Xem tỷ lệ thắng/thua.\n"
+        "   👉 `Reset thong ke`: Xóa sạch lịch sử Win/Loss.\n"
+        "   👉 `Xem theo doi`: Xem danh sách đang canh.\n"
+        "   👉 `Dung`: Dừng tất cả (Cả Auto và Theo dõi).\n"
+        "   👉 Nhập tên Coin bất kỳ (VD: `PEPE`) để xem Chart M5 SMC.\n\n"
         "--------------------------\n"
         f"💳 Đang dùng ví: **{user['currency']}**\n"
         f"💰 Vốn: **{fmt_money(user['balance'], user['currency'])}**\n"
-        f"💵 Chế độ cược: **{'ALL-IN (100%)' if user['is_all_in'] else 'Risk 1% SMC'}**"
+        f"💵 Chế độ cược: **{'ALL-IN (100%)' if user['is_all_in'] else 'Risk 1% SMC (Hoặc lệnh tự chỉnh)'}**"
     )
     bot.reply_to(message, help_text, parse_mode="Markdown")
 
@@ -614,8 +610,12 @@ def handle_msg(message):
                 user['is_all_in'] = True
                 bot.reply_to(message, f"🔥 Đã kích hoạt **CƯỢC ALL-IN** (100% vốn).", parse_mode="Markdown")
             else:
-                user['is_all_in'] = False
-                bot.reply_to(message, "✅ Đã tắt ALL-IN. Chuyển về tính năng **Risk 1% theo SMC**.", parse_mode="Markdown")
+                try:
+                    val = float(parts[1].replace(',', ''))
+                    user['is_all_in'] = False
+                    user['bet_amount'] = val
+                    bot.reply_to(message, f"✅ Đã tắt ALL-IN và set cược cố định: **{fmt_money(val, user['currency'])}**", parse_mode="Markdown")
+                except: pass
         return
 
     if text in ["XEM VON", "VỐN"]:
@@ -746,6 +746,6 @@ def handle_msg(message):
         else:
              bot.edit_message_text("❌ Không tìm thấy coin.", chat_id, msg.message_id)
 
-print("🤖 BOT SMC ICT ĐANG CHẠY (M5/M15 MULTI-TIMEFRAME)...")
+print("🤖 BOT SMC ICT ĐANG CHẠY (GIAO DIỆN ĐẦY ĐỦ)...")
 keep_alive()
 bot.infinity_polling()
