@@ -1,7 +1,6 @@
 import telebot
 import requests
 import numpy as np
-import matplotlib.subplots as plt
 import matplotlib.pyplot as plt
 import io
 import time
@@ -141,13 +140,11 @@ def check_smc_setup(opens, highs, lows, closes, vols, i):
     if i < 150: return None, 0, 0, ""
 
     # BỘ LỌC SỚM (EARLY EXIT): Tăng tốc 100 lần cho Backtest
-    # Nếu Volume không lớn hơn 1.5 lần trung bình 20 nến -> Bỏ qua ngay, đỡ phải tính toán rườm rà!
     vol_now = vols[i]
     vol_avg = np.mean(vols[i-20:i]) if i >= 20 else 0
     if vol_now <= 1.5 * vol_avg:
         return None, 0, 0, ""
     
-    # Chỉ cắt dữ liệu nếu lọt qua màng lọc Volume 
     start_idx = max(0, i - 450) # Cắt mảng đủ sâu (450 nến M5) để tìm Swing M15 Lookback 15
     
     c_h = highs[start_idx:i+1]
@@ -226,8 +223,8 @@ def check_smc_setup(opens, highs, lows, closes, vols, i):
         if in_fvg and (in_fib or near_supp):
             tin_hieu = "LONG (SMC) 🟢"
             ly_do = "M15 Uptrend + FVG + M5 Sweep + Vol Đột biến"
-            sl = curr_l * 0.999 # Nới SL cách râu 0.1% để tránh bị quét láo
-            tp = curr_c + (curr_c - sl) * 2.0 # Giữ chuẩn R:R 1:2
+            sl = curr_l * 0.999 
+            tp = curr_c + (curr_c - sl) * 2.0 
 
     elif is_bearish_sweep and downtrend:
         in_fvg = any(fvg[0] <= curr_h <= fvg[1] for fvg in bearish_fvgs)
@@ -335,7 +332,7 @@ def process_backtest(chat_id, symbol, start_capital, days):
         )
         bot.send_message(chat_id, msg, parse_mode="Markdown")
     except Exception as e:
-        bot.send_message(chat_id, f"❌ Lỗi Backtest: Vui lòng thử lại sau!")
+        bot.send_message(chat_id, f"❌ Lỗi Backtest: {e}. Vui lòng thử lại!")
 
 # --- VẼ CHART M5 SMC ---
 def ve_chart(symbol, opens, highs, lows, closes, vols):
@@ -786,6 +783,6 @@ def handle_msg(message):
         else:
              bot.edit_message_text("❌ Không tìm thấy coin.", chat_id, msg.message_id)
 
-print("🤖 BOT SMC ICT ĐANG CHẠY (ĐÃ FIX TỐC ĐỘ BACKTEST MƯỢT MÀ)...")
+print("🤖 BOT SMC ICT ĐANG CHẠY (ĐÃ FIX LỖI RENDER & BACKTEST)...")
 keep_alive()
 bot.infinity_polling()
