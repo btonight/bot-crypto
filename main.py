@@ -1,7 +1,6 @@
 import telebot
 import requests
 import numpy as np
-import matplotlib.subplots as plt
 import matplotlib.pyplot as plt
 import io
 import time
@@ -53,7 +52,7 @@ def lay_ty_gia_remitano():
     except: pass
     return 26000
 
-# --- LẤY DATA BINANCE FUTURES ---
+# --- LẤY DATA BINANCE FUTURES (CHỐNG CHẶN) ---
 def lay_data_binance(symbol, limit=500):
     NODES = [
         "https://fapi.binance.com/fapi/v1/klines", 
@@ -242,7 +241,7 @@ def check_smc_setup(opens, highs, lows, closes, vols, i):
 
     return tin_hieu, sl, tp, ly_do
 
-# --- BACKTEST ---
+# --- BACKTEST CHUẨN SMC GIAO DIỆN MỚI ---
 def process_backtest(chat_id, symbol, start_capital, days):
     user = get_user_data(chat_id)
     try:
@@ -252,7 +251,7 @@ def process_backtest(chat_id, symbol, start_capital, days):
             return
 
         balance = start_capital
-        leverage = 30 
+        leverage = 30 # x30
         wins, losses = 0, 0
         active_trade = None
         
@@ -331,7 +330,7 @@ def process_backtest(chat_id, symbol, start_capital, days):
         )
         bot.send_message(chat_id, msg, parse_mode="Markdown")
     except Exception as e:
-        bot.send_message(chat_id, f"❌ Lỗi Backtest: Vui lòng thử lại sau!")
+        bot.send_message(chat_id, f"❌ Lỗi Backtest: {e}. Vui lòng thử lại sau!")
 
 # --- VẼ CHART NẾN NHẬT (CANDLESTICK XANH/ĐỎ) ---
 def ve_chart(symbol, opens, highs, lows, closes, vols):
@@ -537,7 +536,7 @@ def check_all_in_safety(user, message, coins_to_add=[]):
             return False
     return True
 
-# --- BOT COMMANDS ---
+# --- BOT COMMANDS (GIAO DIỆN HELP FULL XỊN XÒ) ---
 @bot.message_handler(commands=['start', 'help'])
 def send_help(message):
     user = get_user_data(message.chat.id)
@@ -656,13 +655,18 @@ def handle_msg(message):
         bot.reply_to(message, f"💳 Ví: **{user['currency']}**\n💰 Vốn: **{fmt_money(user['balance'], user['currency'])}**\n💵 Chế độ cược: **{'ALL-IN' if user['is_all_in'] else 'Risk 1% SMC'}**", parse_mode="Markdown")
         return
 
+    # LOGIC CẮT TỪ KHÓA BẮT COIN VÀ VỐN CHO BACKTEST (Fix Chuẩn Khớp Lệnh)
     if text.startswith("BACKTEST"):
         try:
             days = 30 if ("1 THANG" in text or "1 THÁNG" in text) else 7
+            
+            # Tách chuỗi tinh gọn để tìm Coin và Vốn
             clean_text = text.replace("BACKTEST", "").replace("1 THANG", "").replace("1 THÁNG", "").strip()
+            
             parts = clean_text.split("VON")
             coin_part = parts[0].strip()
             
+            # Lọc tìm tên coin chuẩn xác nhất
             symbol = ""
             for word in coin_part.split():
                 if word in WATCHLIST_MARKET:
@@ -676,12 +680,14 @@ def handle_msg(message):
                     bot.reply_to(message, "⚠️ Nhập sai cú pháp. VD: `Backtest 1 thang BTC Von 500000`")
                     return
             
+            # Xác định Vốn test
             cap = 500000 if user['currency'] == 'VNDC' else 100
             if len(parts) > 1:
                 nums = re.findall(r'\d+', parts[1])
                 if nums: cap = float(''.join(nums))
                 
-            bot.reply_to(message, f"⏳ **Đang Backtest SMC...**\n🪙 Coin: **{symbol}**\n🗓 Khung thời gian: **{'30 Ngày' if days==30 else '7 Ngày'}**\n💰 Vốn giả định: **{fmt_money(cap, user['currency'])}**")
+            # Giao diện thông báo đang xử lý đẹp mắt
+            bot.reply_to(message, f"⏳ **Đang Backtest SMC (Tốc độ Cao)...**\n🪙 Coin: **{symbol}**\n🗓 Khung thời gian: **{'30 Ngày' if days==30 else '7 Ngày'}**\n💰 Vốn giả định: **{fmt_money(cap, user['currency'])}**\n⚡️ *Bot đang xử lý dữ liệu, vui lòng đợi vài giây...*")
             threading.Thread(target=process_backtest, args=(chat_id, symbol, cap, days)).start()
         except Exception as e:
             bot.reply_to(message, f"⚠️ Lỗi cú pháp Backtest!")
@@ -792,6 +798,6 @@ def handle_msg(message):
         else:
              bot.edit_message_text("❌ Không tìm thấy coin.", chat_id, msg.message_id)
 
-print("🤖 BOT SMC ĐANG CHẠY (BẢN BIỂU ĐỒ NẾN NHẬT XANH/ĐỎ)...")
+print("🤖 BOT SMC ĐANG CHẠY (BẢN BIỂU ĐỒ NẾN NHẬT + ĐÃ XÓA LỖI RENDER)...")
 keep_alive()
 bot.infinity_polling()
