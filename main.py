@@ -19,7 +19,6 @@ if not API_TOKEN:
     API_TOKEN = '7964594688:AAGPv7UiXdhm0O3mLjRoOxMDNJbrS3vEAmM'
 
 bot = telebot.TeleBot(API_TOKEN)
-
 WATCHLIST_MARKET = ['BTC', 'ETH', 'BNB', 'SOL', 'XRP', 'DOGE', 'ADA', 'AVAX', 'LINK', 'LTC', 'DOT', 'MATIC', 'TRX', 'SHIB', 'NEAR', 'PEPE', 'WIF', 'BONK', 'ARB', 'OP', 'SUI', 'APT', 'FIL', 'ATOM', 'FTM', 'SAND']
 
 USER_DATA = {}
@@ -47,180 +46,215 @@ def fmt_money(amount, currency):
 
 def lay_ty_gia_remitano():
     try:
-        url = "https://api.remitano.com/api/v1/rates/ads"
-        res = requests.get(url, timeout=3).json()
+        res = requests.get("https://api.remitano.com/api/v1/rates/ads", timeout=3).json()
         if 'usdt' in res: return float(res['usdt']['ask'])
     except: pass
     return 26000
 
 # --- LẤY DATA BINANCE FUTURES ---
 def lay_data_binance(symbol, limit=500):
-    NODES = [
-        "https://fapi.binance.com/fapi/v1/klines", 
-        "https://api.binance.com/api/v3/klines", 
-        "https://api1.binance.com/api/v3/klines"
-    ]
+    NODES = ["https://fapi.binance.com/fapi/v1/klines", "https://api.binance.com/api/v3/klines"]
     pair = symbol.upper() + "USDT"
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-
+    headers = {'User-Agent': 'Mozilla/5.0'}
     for url_base in NODES:
         try:
-            url = f"{url_base}?symbol={pair}&interval=5m&limit={limit}"
-            data = requests.get(url, headers=headers, timeout=5).json()
+            data = requests.get(f"{url_base}?symbol={pair}&interval=5m&limit={limit}", headers=headers, timeout=5).json()
             if isinstance(data, list) and len(data) > 0:
-                opens = [float(x[1]) for x in data]
-                highs = [float(x[2]) for x in data]
-                lows = [float(x[3]) for x in data]
-                closes = [float(x[4]) for x in data]
-                volumes = [float(x[5]) for x in data]
-                src_name = "Futures ⚡" if "fapi" in url_base else "Spot"
-                return np.array(opens), np.array(highs), np.array(lows), np.array(closes), np.array(volumes), src_name
+                o = np.array([float(x[1]) for x in data])
+                h = np.array([float(x[2]) for x in data])
+                l = np.array([float(x[3]) for x in data])
+                c = np.array([float(x[4]) for x in data])
+                return o, h, l, c, "Futures ⚡" if "fapi" in url_base else "Spot"
         except: continue
-    return None, None, None, None, None, None
+    return None, None, None, None, None
 
 def lay_data_lich_su(symbol, days=7):
     try:
         pair = symbol.upper() + "USDT"
-        limit_per_req = 1000
-        total_candles = days * 288 # M5 = 288 nến/ngày
-        rounds = int(total_candles / limit_per_req) + 2
-        all_open, all_high, all_low, all_close, all_vol = [], [], [], [], []
+        rounds = int((days * 288) / 1000) + 2
+        all_o, all_h, all_l, all_c = [], [], [], []
         end_time = int(time.time() * 1000) 
-        
         headers = {'User-Agent': 'Mozilla/5.0'}
         for _ in range(rounds):
-            url = f"https://fapi.binance.com/fapi/v1/klines?symbol={pair}&interval=5m&limit={limit_per_req}&endTime={end_time}"
-            data = requests.get(url, headers=headers, timeout=5).json()
-            if not isinstance(data, list) or len(data) == 0: break
-            
-            opens = [float(x[1]) for x in data]
-            highs = [float(x[2]) for x in data]
-            lows = [float(x[3]) for x in data]
-            closes = [float(x[4]) for x in data]
-            vols = [float(x[5]) for x in data]
-            
-            all_open = opens + all_open
-            all_high = highs + all_high
-            all_low = lows + all_low
-            all_close = closes + all_close
-            all_vol = vols + all_vol
+            data = requests.get(f"https://fapi.binance.com/fapi/v1/klines?symbol={pair}&interval=5m&limit=1000&endTime={end_time}", headers=headers, timeout=5).json()
+            if not data: break
+            all_o = [float(x[1]) for x in data] + all_o
+            all_h = [float(x[2]) for x in data] + all_h
+            all_l = [float(x[3]) for x in data] + all_l
+            all_c = [float(x[4]) for x in data] + all_c
             end_time = data[0][0] - 1
-            time.sleep(0.05) 
-        return np.array(all_open), np.array(all_high), np.array(all_low), np.array(all_close), np.array(all_vol), len(all_close)
+        return np.array(all_o), np.array(all_h), np.array(all_l), np.array(all_c), len(all_c)
     except: pass
-    return None, None, None, None, None, 0
+    return None, None, None, None, 0
 
-def lay_gia_coingecko_smart(symbol):
-    try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        search_url = f"https://api.coingecko.com/api/v3/search?query={symbol}"
-        res = requests.get(search_url, headers=headers, timeout=5).json()
-        if 'coins' in res and len(res['coins']) > 0:
-            coin = res['coins'][0]
-            coin_id = coin['id']
-            sym = coin['symbol'].upper()
-            price_url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd"
-            pres = requests.get(price_url, headers=headers, timeout=5).json()
-            if coin_id in pres: return pres[coin_id]['usd'], "CoinGecko", sym
-    except: pass
-    return None, None, None
-
-# --- SMC TRADINGVIEW (LUDOGH68) TO PYTHON LOGIC ---
-def find_swing_points(highs, lows, lookback):
-    swing_highs = []
-    swing_lows = []
-    for i in range(lookback, len(highs) - lookback):
-        if highs[i] == np.max(highs[i-lookback:i+lookback+1]):
-            swing_highs.append((i, highs[i]))
-        if lows[i] == np.min(lows[i-lookback:i+lookback+1]):
-            swing_lows.append((i, lows[i]))
-    return swing_highs, swing_lows
-
-def check_smc_setup(opens, highs, lows, closes, vols, i):
-    if i == -1: i = len(closes) - 1
-    if i < 100: return None, 0, 0, ""
-
-    start_idx = max(0, i - 300) 
+# --- ENGINE SMC THEO CHUẨN PINE SCRIPT (LUDOGH68) ---
+def run_smc_engine(opens, highs, lows, closes):
+    # Khởi tạo biến lưu trữ cho Chart và Backtest
+    fvgs = [] 
+    lines = [] 
     
-    c_h = highs[start_idx:i+1]
-    c_l = lows[start_idx:i+1]
-    c_c = closes[start_idx:i+1]
-
-    # Xác định Cấu trúc (Structure Direction) = Swing Lookback 10
-    sw_h, sw_l = find_swing_points(c_h, c_l, 10)
-    if len(sw_h) < 2 or len(sw_l) < 2:
-        return None, 0, 0, ""
-
-    # Uptrend = Đáy sau cao hơn đáy trước & Đỉnh sau cao hơn đỉnh trước
-    uptrend = (sw_h[-1][1] > sw_h[-2][1]) and (sw_l[-1][1] > sw_l[-2][1])
-    downtrend = (sw_h[-1][1] < sw_h[-2][1]) and (sw_l[-1][1] < sw_l[-2][1])
-
-    # Quét tìm FVG (Fair Value Gap) theo chuẩn PineScript
-    bullish_fvgs = []
-    bearish_fvgs = []
+    struct_high = highs[0]
+    struct_low = lows[0]
+    struct_h_idx = 0
+    struct_l_idx = 0
+    direction = 0 # 0: init, 1: Bearish, 2: Bullish
     
-    # Lấy 50 nến gần nhất để quét FVG (tránh tìm xa quá)
-    fvg_start = max(0, len(c_h) - 50)
-    for j in range(fvg_start, len(c_h) - 2):
-        # Bullish FVG: low[j+2] > high[j] (Gap hở giữa 3 cây nến)
-        if c_l[j+2] > c_h[j]:
-            bot = c_h[j]
-            top = c_l[j+2]
-            # Mitigated (Đã bị lấp) nếu có râu nến nào đâm thủng mép dưới FVG
-            mitigated = any(c_l[k] <= bot for k in range(j+3, len(c_h)))
-            if not mitigated:
-                bullish_fvgs.append((bot, top))
+    signal, sl, tp, reason = None, 0, 0, ""
+
+    # Chạy vòng lặp mô phỏng quá khứ như TradingView
+    for i in range(10, len(closes)):
+        # 1. Tìm FVG (Độ trễ 2 nến)
+        # Bullish FVG
+        if highs[i-2] < lows[i]:
+            fvgs.append({'type': 'bull', 'top': lows[i], 'bot': highs[i-2], 'start': i-1, 'mitigated': False})
+        # Bearish FVG
+        if lows[i-2] > highs[i]:
+            fvgs.append({'type': 'bear', 'top': lows[i-2], 'bot': highs[i], 'start': i-1, 'mitigated': False})
+
+        # Xử lý Mitigate (Xóa hoặc làm mờ FVG nếu giá chạm)
+        for f in fvgs:
+            if not f['mitigated']:
+                if f['type'] == 'bull' and lows[i] <= f['bot']: f['mitigated'] = True
+                elif f['type'] == 'bear' and highs[i] >= f['top']: f['mitigated'] = True
+
+        # 2. Xử lý Cấu Trúc (BOS / CHOCH)
+        curr_c = closes[i]
+        
+        # Break Low
+        if curr_c < struct_low:
+            line_type = "BOS" if direction == 1 else "CHoCH"
+            lines.append({'type': line_type, 'dir': 'bear', 'price': struct_low, 'start': struct_l_idx, 'end': i})
+            direction = 1
+            # Reset đỉnh/đáy mới
+            struct_h_idx = i - 10 + np.argmax(highs[i-10:i+1])
+            struct_high = highs[struct_h_idx]
+            struct_low = lows[i]
+            struct_l_idx = i
+
+        # Break High
+        elif curr_c > struct_high:
+            line_type = "BOS" if direction == 2 else "CHoCH"
+            lines.append({'type': line_type, 'dir': 'bull', 'price': struct_high, 'start': struct_h_idx, 'end': i})
+            direction = 2
+            # Reset đỉnh/đáy mới
+            struct_l_idx = i - 10 + np.argmin(lows[i-10:i+1])
+            struct_low = lows[struct_l_idx]
+            struct_high = highs[i]
+            struct_h_idx = i
+
+        else:
+            # Cập nhật Swing High/Low nếu chưa Break
+            if highs[i] > struct_high and (direction == 0 or direction == 2):
+                struct_high = highs[i]
+                struct_h_idx = i
+            elif lows[i] < struct_low and (direction == 0 or direction == 1):
+                struct_low = lows[i]
+                struct_l_idx = i
+
+        # 3. KÍCH HOẠT LỆNH (Chỉ xét cây nến cuối cùng hiện tại để bắn tín hiệu)
+        if i == len(closes) - 1:
+            for f in reversed(fvgs):
+                if not f['mitigated']:
+                    # Lệnh LONG: Đang Uptrend (dir=2) + Chạm Bullish FVG
+                    if direction == 2 and f['type'] == 'bull' and lows[i] <= f['top'] and closes[i] > f['bot']:
+                        signal = "LONG 🟢"
+                        reason = "Uptrend (BOS/CHoCH) + Retest FVG"
+                        sl = f['bot'] * 0.9995
+                        tp = closes[i] + (closes[i] - sl) * 2.0
+                        break
+                    # Lệnh SHORT: Đang Downtrend (dir=1) + Chạm Bearish FVG
+                    elif direction == 1 and f['type'] == 'bear' and highs[i] >= f['bot'] and closes[i] < f['top']:
+                        signal = "SHORT 🔴"
+                        reason = "Downtrend (BOS/CHoCH) + Retest FVG"
+                        sl = f['top'] * 1.0005
+                        tp = closes[i] - (sl - closes[i]) * 2.0
+                        break
+
+    return signal, sl, tp, reason, fvgs, lines
+
+# --- VẼ CHART SMC CHUẨN TRADINGVIEW ---
+def ve_chart_smc(symbol, opens, highs, lows, closes, fvgs, lines):
+    view = 100 # Hiển thị 100 nến
+    start_idx = len(closes) - view
+    
+    p_o = opens[start_idx:]
+    p_h = highs[start_idx:]
+    p_l = lows[start_idx:]
+    p_c = closes[start_idx:]
+    
+    fig, ax = plt.subplots(figsize=(12, 6))
+    fig.patch.set_facecolor('#1e222d') # Màu nền Dark TradingView
+    ax.set_facecolor('#1e222d')
+    
+    x = np.arange(view)
+    up = p_c >= p_o
+    down = p_c < p_o
+    
+    # Vẽ nến (Candlestick)
+    ax.vlines(x[up], p_l[up], p_h[up], color='#089981', linewidth=1)
+    ax.vlines(x[down], p_l[down], p_h[down], color='#f23645', linewidth=1)
+    ax.bar(x[up], p_c[up] - p_o[up], 0.6, bottom=p_o[up], color='#089981')
+    ax.bar(x[down], p_o[down] - p_c[down], 0.6, bottom=p_c[down], color='#f23645')
+
+    # Vẽ FVG Boxes
+    for f in fvgs:
+        if f['start'] >= start_idx:
+            x_start = f['start'] - start_idx
+            width = view - x_start
+            height = f['top'] - f['bot']
+            
+            # Đổi màu giống hình (Xanh/Đỏ hoặc Xám nếu Mitigated)
+            if f['mitigated']:
+                color = '#787b86'
+                alpha = 0.1
+            else:
+                color = '#089981' if f['type'] == 'bull' else '#f23645'
+                alpha = 0.2
                 
-        # Bearish FVG: high[j+2] < low[j]
-        if c_h[j+2] < c_l[j]:
-            bot = c_h[j+2]
-            top = c_l[j]
-            # Mitigated nếu có râu đâm thủng mép trên FVG
-            mitigated = any(c_h[k] >= top for k in range(j+3, len(c_h)))
-            if not mitigated:
-                bearish_fvgs.append((bot, top))
+            rect = patches.Rectangle((x_start, f['bot']), width, height, linewidth=1, edgecolor=color, facecolor=color, alpha=alpha)
+            ax.add_patch(rect)
+            # Thêm Text FVG
+            if not f['mitigated']:
+                ax.text(x_start + width/2, f['bot'] + height/2, 'FVG', color='white', fontsize=8, ha='center', va='center', alpha=0.7)
 
-    curr_h, curr_l, curr_c = c_h[-1], c_l[-1], c_c[-1]
-    tin_hieu, sl, tp, ly_do = None, 0, 0, ""
+    # Vẽ đường BOS / CHoCH
+    for l in lines:
+        if l['start'] >= start_idx or l['end'] >= start_idx:
+            x1 = max(0, l['start'] - start_idx)
+            x2 = min(view, l['end'] - start_idx)
+            
+            line_color = '#e0e3eb' if l['type'] == 'BOS' else '#ffeb3b' # BOS xám, CHOCH vàng
+            ax.plot([x1, x2], [l['price'], l['price']], color=line_color, linestyle='--', linewidth=1)
+            
+            # Thêm Text BOS/CHOCH
+            ax.text((x1+x2)/2, l['price'], l['type'], color=line_color, fontsize=8, ha='center', va='bottom')
 
-    # --- KHỚP LỆNH SMC BOT ---
-    if uptrend:
-        for bot_fvg, top_fvg in bullish_fvgs:
-            # Giá chạm vào vùng Bullish FVG nhưng chưa thủng đáy (Đóng cửa trên)
-            if curr_l <= top_fvg and curr_c > bot_fvg:
-                tin_hieu = "LONG (SMC) 🟢"
-                ly_do = "M5 Uptrend + Retest Bullish FVG"
-                sl = bot_fvg * 0.9995 # Cắt lỗ ngay dưới mép hộp FVG
-                tp = curr_c + (curr_c - sl) * 2.0 # Tự động R:R 1:2
-                break 
+    ax.set_title(f'{symbol} (M5) SMC LudoGH68 Indicator', color='white')
+    ax.grid(True, color='#2a2e39', linestyle='-', linewidth=0.5)
+    ax.tick_params(colors='white')
+    
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', bbox_inches='tight', facecolor=fig.get_facecolor())
+    buf.seek(0)
+    plt.close()
+    return buf
 
-    elif downtrend:
-        for bot_fvg, top_fvg in bearish_fvgs:
-            # Giá chạm Bearish FVG nhưng rút râu xuống
-            if curr_h >= bot_fvg and curr_c < top_fvg:
-                tin_hieu = "SHORT (SMC) 🔴"
-                ly_do = "M5 Downtrend + Retest Bearish FVG"
-                sl = top_fvg * 1.0005 # Cắt lỗ trên mép hộp FVG
-                tp = curr_c - (sl - curr_c) * 2.0
-                break
-
-    return tin_hieu, sl, tp, ly_do
-
-# --- BACKTEST (SIÊU TỐC ĐÃ FIX) ---
+# --- BACKTEST ---
 def process_backtest(chat_id, symbol, start_capital, days):
     user = get_user_data(chat_id)
     try:
-        opens, highs, lows, closes, vols, count = lay_data_lich_su(symbol, days=days)
+        opens, highs, lows, closes, count = lay_data_lich_su(symbol, days=days)
         if closes is None or len(closes) < 150:
             bot.send_message(chat_id, f"❌ Lỗi mạng hoặc không đủ dữ liệu nến M5 để test.")
             return
 
         balance = start_capital
-        leverage = 30 # x30
+        leverage = 30
         wins, losses = 0, 0
         active_trade = None
         
-        for i in range(150, len(closes)-1):
+        # Chạy logic SMC từng bước để Backtest
+        for i in range(150, len(closes)):
             if active_trade:
                 curr_h, curr_l = highs[i], lows[i]
                 res = None
@@ -236,35 +270,30 @@ def process_backtest(chat_id, symbol, start_capital, days):
                     entry = active_trade['entry']
                     amt = active_trade['amount']
                     close_p = active_trade['tp'] if res == 'WIN' else active_trade['sl']
-                    
                     move = (close_p - entry)/entry if active_trade['type'] == 'LONG' else (entry - close_p)/entry
-                    pnl = move * leverage * amt
                     
-                    balance += pnl
+                    balance += move * leverage * amt
                     if res == 'WIN': wins += 1
                     else: losses += 1
-                    
-                    if balance < 0: balance = 0
                     active_trade = None
                 continue
             
             if balance <= (start_capital * 0.05): break 
             
-            tin_hieu, sl, tp, ly_do = check_smc_setup(opens, highs, lows, closes, vols, i)
+            # Phân tích SMC mảng cắt ngắn để tăng tốc
+            sig, sl, tp, _, _, _ = run_smc_engine(opens[i-150:i+1], highs[i-150:i+1], lows[i-150:i+1], closes[i-150:i+1])
             
-            if tin_hieu:
+            if sig:
                 risk_amt = balance * 0.01
                 entry = closes[i]
                 dist_pct = abs(entry - sl) / entry
                 if dist_pct == 0: dist_pct = 0.001
                 
-                pos_size = risk_amt / dist_pct
-                margin_needed = pos_size / leverage
-                
+                margin_needed = (risk_amt / dist_pct) / leverage
                 if margin_needed > balance: margin_needed = balance
                 
                 active_trade = {
-                    'type': 'LONG' if 'LONG' in tin_hieu else 'SHORT',
+                    'type': 'LONG' if 'LONG' in sig else 'SHORT',
                     'entry': entry, 'sl': sl, 'tp': tp, 
                     'amount': margin_needed 
                 }
@@ -274,94 +303,36 @@ def process_backtest(chat_id, symbol, start_capital, days):
         pnl_total = balance - start_capital
         emoji = "🚀 TO THE MOON" if pnl_total >= 0 else "🩸 ĐỔ MÁU"
         if balance < (start_capital * 0.05): emoji = "💀 CHÁY TÀI KHOẢN"
-        pnl_sign = "+" if pnl_total >= 0 else ""
 
         msg = (
-            f"📊 **BÁO CÁO BACKTEST SMC ICT (Bản Mới)** 📊\n"
+            f"📊 **BÁO CÁO BACKTEST SMC PINESCRIPT** 📊\n"
             f"🪙 **Coin:** {symbol} (Khung M5)\n"
             f"🗓 **Thời gian:** {days} Ngày ({count} nến)\n"
             f"⚙️ **Đòn bẩy:** x{leverage} | **Risk:** 1%\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"💵 **Vốn ban đầu:** {fmt_money(start_capital, user['currency'])}\n"
             f"🏁 **Vốn hiện tại:** {fmt_money(balance, user['currency'])}\n"
-            f"📈 **Lợi nhuận (P&L):** {pnl_sign}{fmt_money(pnl_total, user['currency'])} {emoji}\n"
+            f"📈 **Lợi nhuận (P&L):** {'+' if pnl_total >= 0 else ''}{fmt_money(pnl_total, user['currency'])} {emoji}\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"🏆 **Thắng:** {wins} lệnh\n"
             f"🥀 **Thua:** {losses} lệnh\n"
             f"🔄 **Tổng giao dịch:** {total_trades} lệnh\n"
             f"🎯 **Tỷ lệ Win (Winrate):** {win_rate:.1f}%\n"
             f"━━━━━━━━━━━━━━━━━━\n"
-            f"💡 *Thuật toán: Pine Script SMC (FVG + Cấu trúc Swing).* "
+            f"💡 *Thuật toán: BOS/CHoCH Structure Break + FVG.* "
         )
         bot.send_message(chat_id, msg, parse_mode="Markdown")
     except Exception as e:
-        bot.send_message(chat_id, f"❌ Lỗi Backtest: Vui lòng thử lại!")
-
-# --- VẼ CHART NẾN NHẬT KÈM HỘP FVG ---
-def ve_chart(symbol, opens, highs, lows, closes, vols):
-    view = 60 
-    p_o = opens[-view:]
-    p_h = highs[-view:]
-    p_l = lows[-view:]
-    p_c = closes[-view:]
-    
-    fig, ax1 = plt.subplots(1, 1, figsize=(10, 6))
-    fig.tight_layout(pad=3.0)
-
-    # 1. Vẽ nến Candlestick
-    x = np.arange(view)
-    up = p_c >= p_o
-    down = p_c < p_o
-    
-    ax1.vlines(x[up], p_l[up], p_h[up], color='#26a69a', linewidth=1)
-    ax1.vlines(x[down], p_l[down], p_h[down], color='#ef5350', linewidth=1)
-    width = 0.6
-    ax1.bar(x[up], p_c[up] - p_o[up], width, bottom=p_o[up], color='#26a69a', edgecolor='#26a69a')
-    ax1.bar(x[down], p_o[down] - p_c[down], width, bottom=p_c[down], color='#ef5350', edgecolor='#ef5350')
-
-    # 2. Tự động Quét và Vẽ Hộp FVG chuẩn TradingView
-    for i in range(view - 2):
-        # Bullish FVG
-        if p_l[i+2] > p_h[i]:
-            bot_fvg = p_h[i]
-            top_fvg = p_l[i+2]
-            # Kéo hộp FVG tới hiện tại
-            is_mitigated = any(p_l[k] <= bot_fvg for k in range(i+3, view))
-            # Hộp màu xanh đậm nếu nguyên vẹn, màu xám nếu đã bị lấp
-            bg_color = 'gray' if is_mitigated else '#26a69a'
-            alpha_val = 0.15 if is_mitigated else 0.4
-            
-            rect = patches.Rectangle((i+1, bot_fvg), view - i, top_fvg - bot_fvg, linewidth=0, edgecolor='none', facecolor=bg_color, alpha=alpha_val)
-            ax1.add_patch(rect)
-            
-        # Bearish FVG
-        if p_h[i+2] < p_l[i]:
-            bot_fvg = p_h[i+2]
-            top_fvg = p_l[i]
-            is_mitigated = any(p_h[k] >= top_fvg for k in range(i+3, view))
-            bg_color = 'gray' if is_mitigated else '#ef5350'
-            alpha_val = 0.15 if is_mitigated else 0.4
-            
-            rect = patches.Rectangle((i+1, bot_fvg), view - i, top_fvg - bot_fvg, linewidth=0, edgecolor='none', facecolor=bg_color, alpha=alpha_val)
-            ax1.add_patch(rect)
-
-    ax1.set_title(f'{symbol} (M5) SMC FVG Engine')
-    ax1.grid(True, alpha=0.2)
-    
-    buf = io.BytesIO()
-    plt.savefig(buf, format='png', bbox_inches='tight')
-    buf.seek(0)
-    plt.close()
-    return buf
+        bot.send_message(chat_id, f"❌ Lỗi Backtest: {e}")
 
 # --- EXECUTE ---
 def scan_market(chat_id):
-    bot.send_message(chat_id, "📡 **Đang quét SMC (FVG Box)...**", parse_mode="Markdown")
+    bot.send_message(chat_id, "📡 **Đang quét SMC (BOS + FVG Box)...**", parse_mode="Markdown")
     signals = []
     for symbol in WATCHLIST_MARKET:
-        opens, highs, lows, closes, vols, _ = lay_data_binance(symbol)
+        opens, highs, lows, closes, _ = lay_data_binance(symbol)
         if closes is not None:
-            tin_hieu, _, _, _ = check_smc_setup(opens, highs, lows, closes, vols, -1)
+            tin_hieu, _, _, _, _, _ = run_smc_engine(opens, highs, lows, closes)
             if tin_hieu:
                 signals.append(f"🔥 {symbol}: {tin_hieu}")
     return signals[:10]
@@ -376,9 +347,7 @@ def execute_trade(chat_id, symbol, tin_hieu, ly_do, entry, sl, tp):
     dist_pct = abs(entry - sl) / entry
     if dist_pct == 0: dist_pct = 0.001
     
-    pos_size = risk_amount / dist_pct
-    margin_needed = pos_size / 30 
-    
+    margin_needed = (risk_amount / dist_pct) / 30 
     note = " (Risk 1% SMC)"
     
     if user.get('is_all_in', False):
@@ -413,7 +382,7 @@ def execute_trade(chat_id, symbol, tin_hieu, ly_do, entry, sl, tp):
 
 # --- MONITOR 24/7 ---
 def monitor_thread(chat_id):
-    bot.send_message(chat_id, "🤖 Bot SMC (TradingView logic) đã sẵn sàng săn mồi 24/7...")
+    bot.send_message(chat_id, "🤖 Bot SMC (BOS/CHoCH + FVG) đã sẵn sàng săn mồi 24/7...")
     while True:
         try: 
             user = get_user_data(chat_id)
@@ -424,9 +393,9 @@ def monitor_thread(chat_id):
             current_watching = list(user['watching']) 
             for symbol in current_watching:
                 try: 
-                    opens, highs, lows, closes, vols, _ = lay_data_binance(symbol)
+                    opens, highs, lows, closes, _ = lay_data_binance(symbol)
                     if closes is not None:
-                        tin_hieu, sl, tp, ly_do = check_smc_setup(opens, highs, lows, closes, vols, -1)
+                        tin_hieu, sl, tp, ly_do, _, _ = run_smc_engine(opens, highs, lows, closes)
                         if tin_hieu and symbol not in user['active_trades']:
                             execute_trade(chat_id, symbol, tin_hieu, ly_do, closes[-1], sl, tp)
                             if symbol in user['watching']: user['watching'].remove(symbol)
@@ -437,9 +406,9 @@ def monitor_thread(chat_id):
                 try: 
                     if symbol in user['active_trades']: continue 
 
-                    opens, highs, lows, closes, vols, _ = lay_data_binance(symbol)
+                    opens, highs, lows, closes, _ = lay_data_binance(symbol)
                     if closes is not None:
-                        tin_hieu, sl, tp, ly_do = check_smc_setup(opens, highs, lows, closes, vols, -1)
+                        tin_hieu, sl, tp, ly_do, _, _ = run_smc_engine(opens, highs, lows, closes)
                         if tin_hieu:
                             execute_trade(chat_id, symbol, tin_hieu, ly_do, closes[-1], sl, tp)
                 except: pass
@@ -448,10 +417,9 @@ def monitor_thread(chat_id):
             for symbol in active_symbols:
                 try:
                     trade = user['active_trades'][symbol]
-                    _, highs, lows, closes, _, _ = lay_data_binance(symbol)
+                    _, highs, lows, closes, _ = lay_data_binance(symbol)
                     if closes is not None:
                         curr_h, curr_l = highs[-1], lows[-1]
-                        
                         hit_tp, hit_sl = False, False
                         
                         if trade['type'] == 'LONG':
@@ -465,12 +433,7 @@ def monitor_thread(chat_id):
                             if hit_tp and hit_sl: hit_tp = False
                             
                             close_price = trade['tp'] if hit_tp else trade['sl']
-                            
-                            if trade['type'] == 'LONG':
-                                move = (close_price - trade['entry']) / trade['entry']
-                            else: 
-                                move = (trade['entry'] - close_price) / trade['entry']
-                            
+                            move = (close_price - trade['entry']) / trade['entry'] if trade['type'] == 'LONG' else (trade['entry'] - close_price) / trade['entry']
                             pnl = move * trade['leverage'] * trade['amount']
                             
                             user['balance'] += (trade['amount'] + pnl)
@@ -480,12 +443,11 @@ def monitor_thread(chat_id):
                             
                             is_auto_trade = (symbol in user['auto_watching'])
                             auto_msg = "\n🔄 *Tiếp tục rình mồi SMC...*" if is_auto_trade else "\n🏁 *Đã dừng theo dõi.*"
-                            pnl_sign = "+" if pnl >= 0 else ""
                             
                             msg_to_send = (
                                 f"🔔 **CHỐT LỆNH SMC {symbol} | {ket_qua}**\n"
                                 f"━━━━━━━━━━━━━━━━━━\n"
-                                f"📈 **Lợi nhuận:** {pnl_sign}{fmt_money(pnl, user['currency'])}\n"
+                                f"📈 **Lợi nhuận:** {'+' if pnl >= 0 else ''}{fmt_money(pnl, user['currency'])}\n"
                                 f"💰 **Vốn mới:** {fmt_money(user['balance'], user['currency'])}\n"
                                 f"{auto_msg}"
                             )
@@ -525,7 +487,7 @@ def send_help(message):
         "      - VD: `Backtest BTC Von 500000`\n"
         "   👉 `Backtest 1 thang [Coin] Von [Tiền]`: Test 30 ngày.\n"
         "      - VD: `Backtest 1 thang BTC Von 500000`\n\n"
-        "🚀 **3. SĂN KÈO SMC (M5 SWEEP + FVG):**\n"
+        "🚀 **3. SĂN KÈO SMC (M5 BOS + FVG):**\n"
         "   👉 `Entry now [Coin]`: Vào lệnh tay NGAY LẬP TỨC.\n"
         "   👉 `Scan`: Quét 10 coin có tín hiệu FVG/Liquidity.\n"
         "   👉 `Theo doi [Coin]`: Canh tín hiệu -> Vào lệnh -> Xong thì Dừng.\n"
@@ -535,7 +497,7 @@ def send_help(message):
         "   👉 `Reset thong ke`: Xóa sạch lịch sử Win/Loss.\n"
         "   👉 `Xem theo doi`: Xem danh sách đang canh.\n"
         "   👉 `Dung`: Dừng tất cả (Cả Auto và Theo dõi).\n"
-        "   👉 Nhập tên Coin bất kỳ (VD: `PEPE`) để xem Chart M5 Candlestick + FVG.\n\n"
+        "   👉 Nhập tên Coin bất kỳ (VD: `PEPE`) để xem Chart M5 SMC.\n\n"
         "--------------------------\n"
         f"💳 Đang dùng ví: **{user['currency']}**\n"
         f"💰 Vốn: **{fmt_money(user['balance'], user['currency'])}**\n"
@@ -638,31 +600,28 @@ def handle_msg(message):
                 if word in WATCHLIST_MARKET:
                     symbol = word
                     break
-            
             if not symbol:
                 match = re.search(r'\b([A-Z]{3,})\b', coin_part)
                 if match: symbol = match.group(1)
-                else: 
-                    bot.reply_to(message, "⚠️ Nhập sai cú pháp. VD: `Backtest 1 thang BTC Von 500000`")
-                    return
+                else: return bot.reply_to(message, "⚠️ Nhập sai cú pháp. VD: `Backtest 1 thang BTC Von 500000`")
             
             cap = 500000 if user['currency'] == 'VNDC' else 100
             if len(parts) > 1:
                 nums = re.findall(r'\d+', parts[1])
                 if nums: cap = float(''.join(nums))
                 
-            bot.reply_to(message, f"⏳ **Đang Backtest SMC (Tốc độ Cao)...**\n🪙 Coin: **{symbol}**\n🗓 Khung thời gian: **{'30 Ngày' if days==30 else '7 Ngày'}**\n💰 Vốn giả định: **{fmt_money(cap, user['currency'])}**\n⚡️ *Bot đang tính toán FVG của ngàn nến M5...*")
+            bot.reply_to(message, f"⏳ **Đang Backtest SMC (M5)...**\n🪙 Coin: **{symbol}**\n🗓 Thời gian: **{'30 Ngày' if days==30 else '7 Ngày'}**\n💰 Vốn giả định: **{fmt_money(cap, user['currency'])}**\n⚡️ *Đang phân tích cấu trúc BOS/CHoCH, vui lòng đợi...*")
             threading.Thread(target=process_backtest, args=(chat_id, symbol, cap, days)).start()
-        except Exception as e:
+        except:
             bot.reply_to(message, f"⚠️ Lỗi cú pháp Backtest!")
         return
 
     if text.startswith("ENTRY NOW"):
         symbol = text.replace("ENTRY NOW", "").replace("(", "").replace(")", "").strip()
         if not check_all_in_safety(user, message, [symbol]): return
-        opens, highs, lows, closes, vols, _ = lay_data_binance(symbol)
+        opens, highs, lows, closes, _ = lay_data_binance(symbol)
         if closes is None: return
-        tin_hieu, sl, tp, ly_do = check_smc_setup(opens, highs, lows, closes, vols, -1)
+        tin_hieu, sl, tp, ly_do, _, _ = run_smc_engine(opens, highs, lows, closes)
         if not tin_hieu:
             p_now = closes[-1]
             tin_hieu, sl, tp = "LONG 🟢", p_now*0.9995, p_now*1.001
@@ -676,7 +635,7 @@ def handle_msg(message):
 
     if text == "SCAN":
         res = scan_market(chat_id)
-        if res: bot.reply_to(message, "🔍 **KÈO SMC M5/M15:**\n" + "\n".join(res))
+        if res: bot.reply_to(message, "🔍 **KÈO SMC M5:**\n" + "\n".join(res))
         else: bot.reply_to(message, "Thị trường xấu, chưa có kèo.")
         return
     
@@ -740,18 +699,18 @@ def handle_msg(message):
         return
 
     symbol = text.split()[0]
-    msg = bot.reply_to(message, f"🔍 Phân tích FVG Box {symbol}...")
+    msg = bot.reply_to(message, f"🔍 Vẽ Chart SMC TradingView {symbol}...")
     ty = lay_ty_gia_remitano()
     if ty: TY_GIA_USDT_CACHE = ty
     
-    opens, highs, lows, closes, vols, src = lay_data_binance(symbol)
+    opens, highs, lows, closes, src = lay_data_binance(symbol)
     if closes is not None:
-        photo = ve_chart(symbol, opens, highs, lows, closes, vols)
-        tin_hieu, _, _, ly_do = check_smc_setup(opens, highs, lows, closes, vols, -1)
-        status = f"🚀 **{tin_hieu}**" if tin_hieu else "Giá đang chạy, chưa có Setup."
+        tin_hieu, _, _, ly_do, fvgs, lines = run_smc_engine(opens, highs, lows, closes)
+        photo = ve_chart_smc(symbol, opens, highs, lows, closes, fvgs, lines)
+        status = f"🚀 **{tin_hieu}**" if tin_hieu else "Giá đang chạy, chờ Setup."
         if ly_do: status += f"\n({ly_do})"
         gia_vnd = closes[-1] * TY_GIA_USDT_CACHE
-        caption = f"📊 **{symbol} (SMC Chart)**\n🇺🇸 ${closes[-1]:,.4f}\n🇻🇳 {gia_vnd:,.0f} đ\nStatus: {status}\n📡 {src}"
+        caption = f"📊 **{symbol} (M5 SMC Chart)**\n🇺🇸 ${closes[-1]:,.4f}\n🇻🇳 {gia_vnd:,.0f} đ\nStatus: {status}\n📡 {src}"
         bot.send_photo(chat_id, photo, caption=caption, parse_mode="Markdown")
         bot.delete_message(chat_id, msg.message_id)
     else:
@@ -762,6 +721,6 @@ def handle_msg(message):
         else:
              bot.edit_message_text("❌ Không tìm thấy coin.", chat_id, msg.message_id)
 
-print("🤖 BOT TRADINGVIEW ĐANG CHẠY (BẢN VẼ HỘP FVG & NẾN NHẬT)...")
+print("🤖 BOT SMC ĐANG CHẠY (BẢN TRADINGVIEW - CHART DARK MODE)...")
 keep_alive()
 bot.infinity_polling()
