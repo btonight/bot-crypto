@@ -52,6 +52,21 @@ def lay_ty_gia_remitano():
     except: pass
     return 26000
 
+# --- HÀM GỬI TIN NHẮN CHỐNG MẤT KẾT NỐI ---
+def send_alert(chat_id, msg_text):
+    for _ in range(3): # Thử lại 3 lần nếu mạng lỗi
+        try:
+            bot.send_message(chat_id, msg_text, parse_mode="Markdown")
+            return True
+        except Exception:
+            time.sleep(1)
+    # Nếu Markdown bị lỗi, thử gửi dạng text thường
+    try:
+        bot.send_message(chat_id, msg_text.replace('*', ''))
+        return True
+    except:
+        return False
+
 # --- LẤY DATA BINANCE FUTURES ---
 def lay_data_binance(symbol, limit=500):
     NODES = ["https://fapi.binance.com/fapi/v1/klines", "https://api.binance.com/api/v3/klines", "https://api1.binance.com/api/v3/klines"]
@@ -169,13 +184,13 @@ def run_smc_engine(opens, highs, lows, closes):
                 if not f['mitigated']:
                     if direction == 2 and f['type'] == 'bull' and lows[i] <= f['top'] and closes[i] > f['bot']:
                         signal = "LONG 🟢"
-                        reason = "Uptrend + Retest FVG (Nến Đã Đóng)"
+                        reason = "Uptrend (BOS/CHoCH) + Retest FVG"
                         sl = f['bot'] * 0.9995
                         tp = closes[i] + (closes[i] - sl) * 2.0
                         break
                     elif direction == 1 and f['type'] == 'bear' and highs[i] >= f['bot'] and closes[i] < f['top']:
                         signal = "SHORT 🔴"
-                        reason = "Downtrend + Retest FVG (Nến Đã Đóng)"
+                        reason = "Downtrend (BOS/CHoCH) + Retest FVG"
                         sl = f['top'] * 1.0005
                         tp = closes[i] - (sl - closes[i]) * 2.0
                         break
@@ -342,9 +357,9 @@ def process_backtest(chat_id, symbol, start_capital, days):
             f"━━━━━━━━━━━━━━━━━━\n"
             f"💡 *Thuật toán: Chờ Đóng Nến + Retest FVG.* "
         )
-        bot.send_message(chat_id, msg, parse_mode="Markdown")
+        send_alert(chat_id, msg)
     except Exception as e:
-        bot.send_message(chat_id, f"❌ Lỗi Backtest: {e}")
+        send_alert(chat_id, f"❌ Lỗi Backtest: {e}")
 
 # --- EXECUTE ---
 def scan_market(chat_id):
@@ -353,7 +368,6 @@ def scan_market(chat_id):
     for symbol in WATCHLIST_MARKET:
         opens, highs, lows, closes, _ = lay_data_binance(symbol)
         if closes is not None:
-            # Truyền mảng đã bị CHẶT ĐỨT cây nến cuối cùng ([:-1]) để ép bot đợi đóng nến
             tin_hieu, _, _, _, _, _, _, _, _, _ = run_smc_engine(opens[:-1], highs[:-1], lows[:-1], closes[:-1])
             if tin_hieu:
                 signals.append(f"🔥 {symbol}: {tin_hieu}")
@@ -362,8 +376,12 @@ def scan_market(chat_id):
 def execute_trade(chat_id, symbol, tin_hieu, ly_do, entry, sl, tp):
     user = get_user_data(chat_id)
     if user['balance'] <= 0:
-        bot.send_message(chat_id, "❌ **Hết tiền Demo rồi! Vui lòng nạp thêm vốn bằng lệnh /Von**")
+        if not user.get('out_of_money_warned'):
+            send_alert(chat_id, "❌ **Hết tiền Demo rồi! Vui lòng nạp thêm vốn bằng lệnh /Von**")
+            user['out_of_money_warned'] = True
         return
+    
+    user['out_of_money_warned'] = False
     
     risk_amount = user['balance'] * 0.01 
     dist_pct = abs(entry - sl) / entry
@@ -378,17 +396,9 @@ def execute_trade(chat_id, symbol, tin_hieu, ly_do, entry, sl, tp):
 
     if margin_needed > user['balance']: 
         margin_needed = user['balance']
-
-    user['balance'] -= margin_needed
-    
-    user['active_trades'][symbol] = {
-        'type': 'LONG' if 'LONG' in tin_hieu else 'SHORT',
-        'entry': entry, 'sl': sl, 'tp': tp, 
-        'amount': margin_needed, 'leverage': 30 
-    }
     
     msg = (
-        f"🚀 **ENTRY SMC (ĐÓNG NẾN): {symbol}**\n"
+        f"🚀 **ENTRY SMC MỚI: {symbol}**\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"🧭 **Loại Lệnh:** {tin_hieu}\n"
         f"💡 **Lý do:** {ly_do}\n"
@@ -398,9 +408,17 @@ def execute_trade(chat_id, symbol, tin_hieu, ly_do, entry, sl, tp):
         f"🛑 **Stoploss (SL):** ${sl:,.4f}\n"
         f"🎯 **Takeprofit (TP):** ${tp:,.4f}\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"💰 **Số dư ví:** {fmt_money(user['balance'], user['currency'])}"
+        f"💰 **Số dư ví:** {fmt_money(user['balance'] - margin_needed, user['currency'])}"
     )
-    bot.send_message(chat_id, msg, parse_mode="Markdown")
+    
+    # CHỈ KHI GỬI TIN NHẮN THÀNH CÔNG MỚI ĐƯỢC GHI LẠI LỆNH (Tránh vô lệnh ngầm)
+    if send_alert(chat_id, msg):
+        user['balance'] -= margin_needed
+        user['active_trades'][symbol] = {
+            'type': 'LONG' if 'LONG' in tin_hieu else 'SHORT',
+            'entry': entry, 'sl': sl, 'tp': tp, 
+            'amount': margin_needed, 'leverage': 30 
+        }
 
 # --- LUỒNG GIÁM SÁT GLOBAL ---
 def global_monitor_thread():
@@ -417,10 +435,9 @@ def global_monitor_thread():
                         if symbol in user.get('cooldowns', {}) and time.time() < user['cooldowns'][symbol]: continue
                         opens, highs, lows, closes, _ = lay_data_binance(symbol)
                         if closes is not None:
-                            # CẮT BỎ NẾN ĐANG CHẠY [:-1]
                             tin_hieu, sl, tp, ly_do, _, _, _, _, _, _ = run_smc_engine(opens[:-1], highs[:-1], lows[:-1], closes[:-1])
                             if tin_hieu and symbol not in user['active_trades']:
-                                execute_trade(chat_id, symbol, tin_hieu, ly_do, closes[-1], sl, tp) # Vào lệnh ở giá live (Đầu nến mới)
+                                execute_trade(chat_id, symbol, tin_hieu, ly_do, closes[-1], sl, tp) 
                                 if symbol in user['watching']: user['watching'].remove(symbol)
                     except: pass
 
@@ -458,11 +475,7 @@ def global_monitor_thread():
                                 move = (close_price - trade['entry']) / trade['entry'] if trade['type'] == 'LONG' else (trade['entry'] - close_price) / trade['entry']
                                 pnl = move * trade['leverage'] * trade['amount']
                                 
-                                user['balance'] += (trade['amount'] + pnl)
                                 ket_qua = "WIN 🟢" if hit_tp else "LOSS 🔴"
-                                if hit_tp: user['stats']['wins'] += 1
-                                else: user['stats']['losses'] += 1
-                                
                                 is_auto_trade = (symbol in user['auto_watching'])
                                 auto_msg = "\n🔄 *Tiếp tục rình mồi SMC...*" if is_auto_trade else "\n🏁 *Đã dừng theo dõi.*"
                                 
@@ -470,15 +483,19 @@ def global_monitor_thread():
                                     f"🔔 **CHỐT LỆNH SMC {symbol} | {ket_qua}**\n"
                                     f"━━━━━━━━━━━━━━━━━━\n"
                                     f"📈 **Lợi nhuận:** {'+' if pnl >= 0 else ''}{fmt_money(pnl, user['currency'])}\n"
-                                    f"💰 **Vốn mới:** {fmt_money(user['balance'], user['currency'])}\n"
+                                    f"💰 **Vốn mới:** {fmt_money(user['balance'] + trade['amount'] + pnl, user['currency'])}\n"
                                     f"{auto_msg}"
                                 )
                                 
-                                bot.send_message(chat_id, msg_to_send, parse_mode="Markdown")
+                                send_alert(chat_id, msg_to_send)
+                                # Cập nhật tiền, xóa lệnh và cài hồi chiêu 5 phút (chống spam)
+                                user['balance'] += (trade['amount'] + pnl)
+                                if hit_tp: user['stats']['wins'] += 1
+                                else: user['stats']['losses'] += 1
                                 del user['active_trades'][symbol]
                                 user.setdefault('cooldowns', {})[symbol] = time.time() + 300 
                     except: pass
-        except Exception as e:
+        except Exception:
             pass
         time.sleep(60) 
 
@@ -640,7 +657,6 @@ def handle_msg(message):
         if not check_all_in_safety(user, message, [symbol]): return
         opens, highs, lows, closes, _ = lay_data_binance(symbol)
         if closes is None: return
-        # Lệnh bằng tay lấy tín hiệu dựa trên nến đóng, nhưng giá vào là giá Live
         tin_hieu, sl, tp, ly_do, _, _, _, _, _, _ = run_smc_engine(opens[:-1], highs[:-1], lows[:-1], closes[:-1])
         if not tin_hieu:
             p_now = closes[-1]
@@ -715,9 +731,8 @@ def handle_msg(message):
     opens, highs, lows, closes, src = lay_data_binance(symbol)
     if closes is not None:
         active_trade = user['active_trades'].get(symbol)
-        
-        # Vẽ chart có CHỨA CẢ CÂY NẾN ĐANG CHẠY để xem diễn biến
         tin_hieu, _, _, ly_do, fvgs, lines, s_high, s_low, sh_idx, sl_idx = run_smc_engine(opens, highs, lows, closes)
+        
         photo = ve_chart_smc(symbol, opens, highs, lows, closes, fvgs, lines, s_high, s_low, sh_idx, sl_idx, active_trade)
         
         if active_trade:
@@ -731,7 +746,6 @@ def handle_msg(message):
             pnl_sign = "+" if pnl >= 0 else ""
             status = f"⏳ Đang giữ lệnh **{active_trade['type']}**\n📈 Lãi/lỗ tạm tính: {pnl_sign}{fmt_money(pnl, user['currency'])}"
         else:
-            # Lấy trạng thái của nến TRƯỚC ĐÓ (đã đóng) để báo tín hiệu
             tin_hieu_confirmed, _, _, ly_do_confirmed, _, _, _, _, _, _ = run_smc_engine(opens[:-1], highs[:-1], lows[:-1], closes[:-1])
             status = f"🚀 **{tin_hieu_confirmed}**" if tin_hieu_confirmed else "Giá đang chạy, chờ Setup."
             if ly_do_confirmed: status += f"\n({ly_do_confirmed})"
@@ -749,7 +763,7 @@ def handle_msg(message):
         else:
              bot.edit_message_text("❌ Không tìm thấy coin.", chat_id, msg.message_id)
 
-print("🤖 BOT SMC ĐANG CHẠY (BẢN KỶ LUẬT: CHỜ ĐÓNG NẾN MỚI VÀO LỆNH)...")
+print("🤖 BOT SMC ĐANG CHẠY (BẢN FIX LỖI VÀO LỆNH NGẦM HOÀN TOÀN)...")
 threading.Thread(target=global_monitor_thread, daemon=True).start()
 keep_alive()
 bot.infinity_polling()
