@@ -35,7 +35,8 @@ def get_user_data(chat_id):
             'auto_watching': [],  
             'active_trades': {},
             'stats': {'wins': 0, 'losses': 0},
-            'cooldowns': {} # BỘ CHẶN SPAM LỆNH (COOLDOWN)
+            'is_monitoring': False,
+            'cooldowns': {} 
         }
     return USER_DATA[chat_id]
 
@@ -126,13 +127,12 @@ def run_smc_engine(opens, highs, lows, closes):
         for f in fvgs:
             if f['deleted']: continue
             if f['type'] == 'bull':
-                if lows[i] <= f['bot']: f['deleted'] = True # Đâm xuyên -> Xóa
-                elif lows[i] < f['top']: f['mitigated'] = True # Chạm râu -> Chuyển Xám
+                if lows[i] <= f['bot']: f['deleted'] = True 
+                elif lows[i] < f['top']: f['mitigated'] = True 
             elif f['type'] == 'bear':
                 if highs[i] >= f['top']: f['deleted'] = True
                 elif highs[i] > f['bot']: f['mitigated'] = True
 
-        # Dọn rác FVG đã bị lấp hoàn toàn
         fvgs = [f for f in fvgs if not f['deleted']]
 
         # 3. Cấu trúc (BOS / CHOCH)
@@ -163,26 +163,26 @@ def run_smc_engine(opens, highs, lows, closes):
                 struct_low = lows[i]
                 struct_l_idx = i
 
-        # 4. Kích hoạt Lệnh (Chỉ xét nến cuối)
+        # 4. KÍCH HOẠT LỆNH TRÊN CÂY NẾN CUỐI CÙNG (Đã đóng cửa)
         if i == len(closes) - 1:
             for f in reversed(fvgs):
                 if not f['mitigated']:
                     if direction == 2 and f['type'] == 'bull' and lows[i] <= f['top'] and closes[i] > f['bot']:
                         signal = "LONG 🟢"
-                        reason = "Uptrend (BOS/CHoCH) + Retest FVG"
+                        reason = "Uptrend + Retest FVG (Nến Đã Đóng)"
                         sl = f['bot'] * 0.9995
                         tp = closes[i] + (closes[i] - sl) * 2.0
                         break
                     elif direction == 1 and f['type'] == 'bear' and highs[i] >= f['bot'] and closes[i] < f['top']:
                         signal = "SHORT 🔴"
-                        reason = "Downtrend (BOS/CHoCH) + Retest FVG"
+                        reason = "Downtrend + Retest FVG (Nến Đã Đóng)"
                         sl = f['top'] * 1.0005
                         tp = closes[i] - (sl - closes[i]) * 2.0
                         break
 
     return signal, sl, tp, reason, fvgs, lines, struct_high, struct_low, struct_h_idx, struct_l_idx
 
-# --- VẼ CHART SMC CHUẨN TRADINGVIEW (CÓ HIỂN THỊ LỆNH ĐANG CHẠY & BLUE LINES) ---
+# --- VẼ CHART SMC CHUẨN TRADINGVIEW ---
 def ve_chart_smc(symbol, opens, highs, lows, closes, fvgs, lines, struct_high, struct_low, struct_h_idx, struct_l_idx, active_trade=None):
     view = 100 
     start_idx = len(closes) - view
@@ -205,8 +205,7 @@ def ve_chart_smc(symbol, opens, highs, lows, closes, fvgs, lines, struct_high, s
     ax.bar(x[up], p_c[up] - p_o[up], 0.6, bottom=p_o[up], color='#089981')
     ax.bar(x[down], p_o[down] - p_c[down], 0.6, bottom=p_c[down], color='#f23645')
 
-    # Vẽ FVG Boxes (Đã dọn dẹp)
-    for f in fvgs[-15:]: # Chỉ vẽ tối đa 15 FVG gần nhất để đỡ rối
+    for f in fvgs[-15:]: 
         if f['start'] >= start_idx:
             x_start = f['start'] - start_idx
             width = view - x_start
@@ -224,7 +223,6 @@ def ve_chart_smc(symbol, opens, highs, lows, closes, fvgs, lines, struct_high, s
             if not f['mitigated']:
                 ax.text(x_start + width/2, f['bot'] + height/2, 'FVG', color='white', fontsize=7, ha='center', va='center', alpha=0.7)
 
-    # Vẽ đường BOS / CHoCH
     for l in lines:
         if l['start'] >= start_idx or l['end'] >= start_idx:
             x1 = max(0, l['start'] - start_idx)
@@ -233,13 +231,11 @@ def ve_chart_smc(symbol, opens, highs, lows, closes, fvgs, lines, struct_high, s
             ax.plot([x1, x2], [l['price'], l['price']], color=line_color, linestyle='--', linewidth=1)
             ax.text((x1+x2)/2, l['price'], l['type'], color=line_color, fontsize=8, ha='center', va='bottom')
 
-    # Vẽ đường Xanh Dương (Current Structure High/Low)
     x_start_h = max(0, struct_h_idx - start_idx)
     ax.plot([x_start_h, view], [struct_high, struct_high], color='#2962FF', linestyle='-', linewidth=1.2, alpha=0.7)
     x_start_l = max(0, struct_l_idx - start_idx)
     ax.plot([x_start_l, view], [struct_low, struct_low], color='#2962FF', linestyle='-', linewidth=1.2, alpha=0.7)
 
-    # Vẽ Đường Lệnh Đang Chạy (Entry, SL, TP)
     if active_trade:
         ep = active_trade['entry']
         sl = active_trade['sl']
@@ -253,7 +249,6 @@ def ve_chart_smc(symbol, opens, highs, lows, closes, fvgs, lines, struct_high, s
         ax.text(view - 2, sl, ' SL', color='white', fontsize=9, ha='right', va='bottom', backgroundcolor='#f23645')
         ax.text(view - 2, tp, ' TP', color='white', fontsize=9, ha='right', va='bottom', backgroundcolor='#089981')
         
-        # Tô màu vùng R:R
         ax.axhspan(ep, tp, color='#089981', alpha=0.1)
         ax.axhspan(ep, sl, color='#f23645', alpha=0.1)
 
@@ -345,7 +340,7 @@ def process_backtest(chat_id, symbol, start_capital, days):
             f"🔄 **Tổng giao dịch:** {total_trades} lệnh\n"
             f"🎯 **Tỷ lệ Win (Winrate):** {win_rate:.1f}%\n"
             f"━━━━━━━━━━━━━━━━━━\n"
-            f"💡 *Thuật toán: BOS/CHoCH Structure Break + FVG.* "
+            f"💡 *Thuật toán: Chờ Đóng Nến + Retest FVG.* "
         )
         bot.send_message(chat_id, msg, parse_mode="Markdown")
     except Exception as e:
@@ -353,12 +348,13 @@ def process_backtest(chat_id, symbol, start_capital, days):
 
 # --- EXECUTE ---
 def scan_market(chat_id):
-    bot.send_message(chat_id, "📡 **Đang quét SMC (BOS + FVG Box)...**", parse_mode="Markdown")
+    bot.send_message(chat_id, "📡 **Đang quét SMC (Chỉ lấy nến đã đóng)...**", parse_mode="Markdown")
     signals = []
     for symbol in WATCHLIST_MARKET:
         opens, highs, lows, closes, _ = lay_data_binance(symbol)
         if closes is not None:
-            tin_hieu, _, _, _, _, _, _, _, _, _ = run_smc_engine(opens, highs, lows, closes)
+            # Truyền mảng đã bị CHẶT ĐỨT cây nến cuối cùng ([:-1]) để ép bot đợi đóng nến
+            tin_hieu, _, _, _, _, _, _, _, _, _ = run_smc_engine(opens[:-1], highs[:-1], lows[:-1], closes[:-1])
             if tin_hieu:
                 signals.append(f"🔥 {symbol}: {tin_hieu}")
     return signals[:10]
@@ -392,7 +388,7 @@ def execute_trade(chat_id, symbol, tin_hieu, ly_do, entry, sl, tp):
     }
     
     msg = (
-        f"🚀 **ENTRY SMC MỚI: {symbol}**\n"
+        f"🚀 **ENTRY SMC (ĐÓNG NẾN): {symbol}**\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"🧭 **Loại Lệnh:** {tin_hieu}\n"
         f"💡 **Lý do:** {ly_do}\n"
@@ -406,50 +402,40 @@ def execute_trade(chat_id, symbol, tin_hieu, ly_do, entry, sl, tp):
     )
     bot.send_message(chat_id, msg, parse_mode="Markdown")
 
-# --- LUỒNG GIÁM SÁT GLOBAL (DIỆT ZOMBIE THREAD - CHỐNG SPAM) ---
+# --- LUỒNG GIÁM SÁT GLOBAL ---
 def global_monitor_thread():
-    print("🤖 Luồng giám sát Global đã khởi động!")
+    print("🤖 Luồng giám sát Global đã khởi động (Chờ đóng nến)!")
     while True:
         try: 
-            # Dùng 1 luồng duy nhất duyệt qua tất cả người dùng
             for chat_id in list(USER_DATA.keys()):
                 user = USER_DATA[chat_id]
-                
                 if not user['watching'] and not user['active_trades'] and not user['auto_watching']: 
                     continue
 
-                # 1. Theo dõi 1 lần
                 for symbol in list(user['watching']):
                     try: 
-                        # Chặn Cooldown
-                        if symbol in user.get('cooldowns', {}) and time.time() < user['cooldowns'][symbol]:
-                            continue
-                            
+                        if symbol in user.get('cooldowns', {}) and time.time() < user['cooldowns'][symbol]: continue
                         opens, highs, lows, closes, _ = lay_data_binance(symbol)
                         if closes is not None:
-                            tin_hieu, sl, tp, ly_do, _, _, _, _, _, _ = run_smc_engine(opens, highs, lows, closes)
+                            # CẮT BỎ NẾN ĐANG CHẠY [:-1]
+                            tin_hieu, sl, tp, ly_do, _, _, _, _, _, _ = run_smc_engine(opens[:-1], highs[:-1], lows[:-1], closes[:-1])
                             if tin_hieu and symbol not in user['active_trades']:
-                                execute_trade(chat_id, symbol, tin_hieu, ly_do, closes[-1], sl, tp)
+                                execute_trade(chat_id, symbol, tin_hieu, ly_do, closes[-1], sl, tp) # Vào lệnh ở giá live (Đầu nến mới)
                                 if symbol in user['watching']: user['watching'].remove(symbol)
                     except: pass
 
-                # 2. Auto 24/7
                 for symbol in list(user['auto_watching']):
                     try: 
-                        # Chặn Cooldown
-                        if symbol in user.get('cooldowns', {}) and time.time() < user['cooldowns'][symbol]:
-                            continue
-                            
+                        if symbol in user.get('cooldowns', {}) and time.time() < user['cooldowns'][symbol]: continue
                         if symbol in user['active_trades']: continue 
 
                         opens, highs, lows, closes, _ = lay_data_binance(symbol)
                         if closes is not None:
-                            tin_hieu, sl, tp, ly_do, _, _, _, _, _, _ = run_smc_engine(opens, highs, lows, closes)
+                            tin_hieu, sl, tp, ly_do, _, _, _, _, _, _ = run_smc_engine(opens[:-1], highs[:-1], lows[:-1], closes[:-1])
                             if tin_hieu:
                                 execute_trade(chat_id, symbol, tin_hieu, ly_do, closes[-1], sl, tp)
                     except: pass
                 
-                # 3. Quản lý lệnh đang mở (Chốt lời / Cắt lỗ)
                 for symbol in list(user['active_trades'].keys()):
                     try:
                         trade = user['active_trades'][symbol]
@@ -488,16 +474,13 @@ def global_monitor_thread():
                                     f"{auto_msg}"
                                 )
                                 
-                                # Đã sửa: Gửi tin nhắn trước, xóa lệnh sau, cài Cooldown 5 phút
                                 bot.send_message(chat_id, msg_to_send, parse_mode="Markdown")
                                 del user['active_trades'][symbol]
                                 user.setdefault('cooldowns', {})[symbol] = time.time() + 300 
                     except: pass
-
         except Exception as e:
             pass
-        
-        time.sleep(60) # Luồng chỉ ngủ 60s một lần ở đây
+        time.sleep(60) 
 
 def check_all_in_safety(user, message, coins_to_add=[]):
     if user.get('is_all_in', False):
@@ -508,7 +491,7 @@ def check_all_in_safety(user, message, coins_to_add=[]):
             return False
     return True
 
-# --- BOT COMMANDS (GIAO DIỆN HELP FULL XỊN XÒ) ---
+# --- BOT COMMANDS ---
 @bot.message_handler(commands=['start', 'help'])
 def send_help(message):
     user = get_user_data(message.chat.id)
@@ -526,9 +509,9 @@ def send_help(message):
         "      - VD: `Backtest BTC Von 500000`\n"
         "   👉 `Backtest 1 thang [Coin] Von [Tiền]`: Test 30 ngày.\n"
         "      - VD: `Backtest 1 thang BTC Von 500000`\n\n"
-        "🚀 **3. SĂN KÈO SMC (M5 BOS + FVG):**\n"
+        "🚀 **3. SĂN KÈO SMC (M5 BOS + FVG - CHỜ ĐÓNG NẾN):**\n"
         "   👉 `Entry now [Coin]`: Vào lệnh tay NGAY LẬP TỨC.\n"
-        "   👉 `Scan`: Quét 10 coin có tín hiệu FVG/Liquidity.\n"
+        "   👉 `Scan`: Quét 10 coin có tín hiệu FVG.\n"
         "   👉 `Theo doi [Coin]`: Canh tín hiệu -> Vào lệnh -> Xong thì Dừng.\n"
         "   👉 `/Auto [Coin]`: Canh tín hiệu -> Vào lệnh -> Xong thì Lặp lại 24/7.\n\n"
         "📊 **4. TIỆN ÍCH KHÁC:**\n"
@@ -646,7 +629,7 @@ def handle_msg(message):
                 nums = re.findall(r'\d+', parts[1])
                 if nums: cap = float(''.join(nums))
                 
-            bot.reply_to(message, f"⏳ **Đang Backtest SMC (M5)...**\n🪙 Coin: **{symbol}**\n🗓 Thời gian: **{'30 Ngày' if days==30 else '7 Ngày'}**\n💰 Vốn giả định: **{fmt_money(cap, user['currency'])}**\n⚡️ *Đang phân tích cấu trúc BOS/CHoCH, vui lòng đợi...*")
+            bot.reply_to(message, f"⏳ **Đang Backtest SMC (Chờ Đóng Nến)...**\n🪙 Coin: **{symbol}**\n🗓 Thời gian: **{'30 Ngày' if days==30 else '7 Ngày'}**\n💰 Vốn giả định: **{fmt_money(cap, user['currency'])}**")
             threading.Thread(target=process_backtest, args=(chat_id, symbol, cap, days)).start()
         except:
             bot.reply_to(message, f"⚠️ Lỗi cú pháp Backtest!")
@@ -657,7 +640,8 @@ def handle_msg(message):
         if not check_all_in_safety(user, message, [symbol]): return
         opens, highs, lows, closes, _ = lay_data_binance(symbol)
         if closes is None: return
-        tin_hieu, sl, tp, ly_do, _, _, _, _, _, _ = run_smc_engine(opens, highs, lows, closes)
+        # Lệnh bằng tay lấy tín hiệu dựa trên nến đóng, nhưng giá vào là giá Live
+        tin_hieu, sl, tp, ly_do, _, _, _, _, _, _ = run_smc_engine(opens[:-1], highs[:-1], lows[:-1], closes[:-1])
         if not tin_hieu:
             p_now = closes[-1]
             tin_hieu, sl, tp = "LONG 🟢", p_now*0.9995, p_now*1.001
@@ -723,7 +707,6 @@ def handle_msg(message):
         bot.reply_to(message, msg)
         return
 
-    # BẢN VÁ LỖI: SỬA LẠI TỪ BỊ MẤT TEXT THÀNH LƯU TEXT
     symbol = text.split()[0]
     msg = bot.reply_to(message, f"🔍 Đang phân tích Chart SMC TradingView {symbol}...")
     ty = lay_ty_gia_remitano()
@@ -732,8 +715,9 @@ def handle_msg(message):
     opens, highs, lows, closes, src = lay_data_binance(symbol)
     if closes is not None:
         active_trade = user['active_trades'].get(symbol)
-        tin_hieu, _, _, ly_do, fvgs, lines, s_high, s_low, sh_idx, sl_idx = run_smc_engine(opens, highs, lows, closes)
         
+        # Vẽ chart có CHỨA CẢ CÂY NẾN ĐANG CHẠY để xem diễn biến
+        tin_hieu, _, _, ly_do, fvgs, lines, s_high, s_low, sh_idx, sl_idx = run_smc_engine(opens, highs, lows, closes)
         photo = ve_chart_smc(symbol, opens, highs, lows, closes, fvgs, lines, s_high, s_low, sh_idx, sl_idx, active_trade)
         
         if active_trade:
@@ -747,8 +731,10 @@ def handle_msg(message):
             pnl_sign = "+" if pnl >= 0 else ""
             status = f"⏳ Đang giữ lệnh **{active_trade['type']}**\n📈 Lãi/lỗ tạm tính: {pnl_sign}{fmt_money(pnl, user['currency'])}"
         else:
-            status = f"🚀 **{tin_hieu}**" if tin_hieu else "Giá đang chạy, chờ Setup."
-            if ly_do: status += f"\n({ly_do})"
+            # Lấy trạng thái của nến TRƯỚC ĐÓ (đã đóng) để báo tín hiệu
+            tin_hieu_confirmed, _, _, ly_do_confirmed, _, _, _, _, _, _ = run_smc_engine(opens[:-1], highs[:-1], lows[:-1], closes[:-1])
+            status = f"🚀 **{tin_hieu_confirmed}**" if tin_hieu_confirmed else "Giá đang chạy, chờ Setup."
+            if ly_do_confirmed: status += f"\n({ly_do_confirmed})"
             
         gia_vnd = closes[-1] * TY_GIA_USDT_CACHE
         caption = f"📊 **{symbol} (M5 SMC Chart)**\n🇺🇸 ${closes[-1]:,.4f}\n🇻🇳 {gia_vnd:,.0f} đ\nStatus: {status}\n📡 {src}"
@@ -763,8 +749,7 @@ def handle_msg(message):
         else:
              bot.edit_message_text("❌ Không tìm thấy coin.", chat_id, msg.message_id)
 
-print("🤖 BOT SMC ĐANG CHẠY (ĐÃ DIỆT ZOMBIE THREAD CHỐNG SPAM)...")
-# Khởi động luồng giám sát duy nhất ngay khi mở Bot
+print("🤖 BOT SMC ĐANG CHẠY (BẢN KỶ LUẬT: CHỜ ĐÓNG NẾN MỚI VÀO LỆNH)...")
 threading.Thread(target=global_monitor_thread, daemon=True).start()
 keep_alive()
 bot.infinity_polling()
