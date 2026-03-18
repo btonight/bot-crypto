@@ -35,7 +35,7 @@ def get_user_data(chat_id):
             'auto_watching': [],  
             'active_trades': {},
             'stats': {'wins': 0, 'losses': 0},
-            'is_monitoring': False 
+            'cooldowns': {} # BỘ CHẶN SPAM LỆNH (COOLDOWN)
         }
     return USER_DATA[chat_id]
 
@@ -53,7 +53,7 @@ def lay_ty_gia_remitano():
 
 # --- LẤY DATA BINANCE FUTURES ---
 def lay_data_binance(symbol, limit=500):
-    NODES = ["https://fapi.binance.com/fapi/v1/klines", "https://api.binance.com/api/v3/klines"]
+    NODES = ["https://fapi.binance.com/fapi/v1/klines", "https://api.binance.com/api/v3/klines", "https://api1.binance.com/api/v3/klines"]
     pair = symbol.upper() + "USDT"
     headers = {'User-Agent': 'Mozilla/5.0'}
     for url_base in NODES:
@@ -87,9 +87,23 @@ def lay_data_lich_su(symbol, days=7):
     except: pass
     return None, None, None, None, 0
 
+def lay_gia_coingecko_smart(symbol):
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        search_url = f"https://api.coingecko.com/api/v3/search?query={symbol}"
+        res = requests.get(search_url, headers=headers, timeout=5).json()
+        if 'coins' in res and len(res['coins']) > 0:
+            coin = res['coins'][0]
+            coin_id = coin['id']
+            sym = coin['symbol'].upper()
+            price_url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd"
+            pres = requests.get(price_url, headers=headers, timeout=5).json()
+            if coin_id in pres: return pres[coin_id]['usd'], "CoinGecko", sym
+    except: pass
+    return None, None, None
+
 # --- ENGINE SMC THEO CHUẨN PINE SCRIPT (LUDOGH68) ---
 def run_smc_engine(opens, highs, lows, closes):
-    # Khởi tạo biến lưu trữ cho Chart và Backtest
     fvgs = [] 
     lines = [] 
     
@@ -97,53 +111,51 @@ def run_smc_engine(opens, highs, lows, closes):
     struct_low = lows[0]
     struct_h_idx = 0
     struct_l_idx = 0
-    direction = 0 # 0: init, 1: Bearish, 2: Bullish
+    direction = 0 
     
     signal, sl, tp, reason = None, 0, 0, ""
 
-    # Chạy vòng lặp mô phỏng quá khứ như TradingView
     for i in range(10, len(closes)):
-        # 1. Tìm FVG (Độ trễ 2 nến)
-        # Bullish FVG
+        # 1. Tạo FVG
         if highs[i-2] < lows[i]:
-            fvgs.append({'type': 'bull', 'top': lows[i], 'bot': highs[i-2], 'start': i-1, 'mitigated': False})
-        # Bearish FVG
+            fvgs.append({'type': 'bull', 'top': lows[i], 'bot': highs[i-2], 'start': i-1, 'mitigated': False, 'deleted': False})
         if lows[i-2] > highs[i]:
-            fvgs.append({'type': 'bear', 'top': lows[i-2], 'bot': highs[i], 'start': i-1, 'mitigated': False})
+            fvgs.append({'type': 'bear', 'top': lows[i-2], 'bot': highs[i], 'start': i-1, 'mitigated': False, 'deleted': False})
 
-        # Xử lý Mitigate (Xóa hoặc làm mờ FVG nếu giá chạm)
+        # 2. Xử lý FVG (Mitigated - Xám / Deleted - Xóa hẳn)
         for f in fvgs:
-            if not f['mitigated']:
-                if f['type'] == 'bull' and lows[i] <= f['bot']: f['mitigated'] = True
-                elif f['type'] == 'bear' and highs[i] >= f['top']: f['mitigated'] = True
+            if f['deleted']: continue
+            if f['type'] == 'bull':
+                if lows[i] <= f['bot']: f['deleted'] = True # Đâm xuyên -> Xóa
+                elif lows[i] < f['top']: f['mitigated'] = True # Chạm râu -> Chuyển Xám
+            elif f['type'] == 'bear':
+                if highs[i] >= f['top']: f['deleted'] = True
+                elif highs[i] > f['bot']: f['mitigated'] = True
 
-        # 2. Xử lý Cấu Trúc (BOS / CHOCH)
+        # Dọn rác FVG đã bị lấp hoàn toàn
+        fvgs = [f for f in fvgs if not f['deleted']]
+
+        # 3. Cấu trúc (BOS / CHOCH)
         curr_c = closes[i]
-        
-        # Break Low
         if curr_c < struct_low:
             line_type = "BOS" if direction == 1 else "CHoCH"
             lines.append({'type': line_type, 'dir': 'bear', 'price': struct_low, 'start': struct_l_idx, 'end': i})
             direction = 1
-            # Reset đỉnh/đáy mới
             struct_h_idx = i - 10 + np.argmax(highs[i-10:i+1])
             struct_high = highs[struct_h_idx]
             struct_low = lows[i]
             struct_l_idx = i
 
-        # Break High
         elif curr_c > struct_high:
             line_type = "BOS" if direction == 2 else "CHoCH"
             lines.append({'type': line_type, 'dir': 'bull', 'price': struct_high, 'start': struct_h_idx, 'end': i})
             direction = 2
-            # Reset đỉnh/đáy mới
             struct_l_idx = i - 10 + np.argmin(lows[i-10:i+1])
             struct_low = lows[struct_l_idx]
             struct_high = highs[i]
             struct_h_idx = i
 
         else:
-            # Cập nhật Swing High/Low nếu chưa Break
             if highs[i] > struct_high and (direction == 0 or direction == 2):
                 struct_high = highs[i]
                 struct_h_idx = i
@@ -151,18 +163,16 @@ def run_smc_engine(opens, highs, lows, closes):
                 struct_low = lows[i]
                 struct_l_idx = i
 
-        # 3. KÍCH HOẠT LỆNH (Chỉ xét cây nến cuối cùng hiện tại để bắn tín hiệu)
+        # 4. Kích hoạt Lệnh (Chỉ xét nến cuối)
         if i == len(closes) - 1:
             for f in reversed(fvgs):
                 if not f['mitigated']:
-                    # Lệnh LONG: Đang Uptrend (dir=2) + Chạm Bullish FVG
                     if direction == 2 and f['type'] == 'bull' and lows[i] <= f['top'] and closes[i] > f['bot']:
                         signal = "LONG 🟢"
                         reason = "Uptrend (BOS/CHoCH) + Retest FVG"
                         sl = f['bot'] * 0.9995
                         tp = closes[i] + (closes[i] - sl) * 2.0
                         break
-                    # Lệnh SHORT: Đang Downtrend (dir=1) + Chạm Bearish FVG
                     elif direction == 1 and f['type'] == 'bear' and highs[i] >= f['bot'] and closes[i] < f['top']:
                         signal = "SHORT 🔴"
                         reason = "Downtrend (BOS/CHoCH) + Retest FVG"
@@ -170,11 +180,11 @@ def run_smc_engine(opens, highs, lows, closes):
                         tp = closes[i] - (sl - closes[i]) * 2.0
                         break
 
-    return signal, sl, tp, reason, fvgs, lines
+    return signal, sl, tp, reason, fvgs, lines, struct_high, struct_low, struct_h_idx, struct_l_idx
 
-# --- VẼ CHART SMC CHUẨN TRADINGVIEW ---
-def ve_chart_smc(symbol, opens, highs, lows, closes, fvgs, lines):
-    view = 100 # Hiển thị 100 nến
+# --- VẼ CHART SMC CHUẨN TRADINGVIEW (CÓ HIỂN THỊ LỆNH ĐANG CHẠY & BLUE LINES) ---
+def ve_chart_smc(symbol, opens, highs, lows, closes, fvgs, lines, struct_high, struct_low, struct_h_idx, struct_l_idx, active_trade=None):
+    view = 100 
     start_idx = len(closes) - view
     
     p_o = opens[start_idx:]
@@ -183,51 +193,69 @@ def ve_chart_smc(symbol, opens, highs, lows, closes, fvgs, lines):
     p_c = closes[start_idx:]
     
     fig, ax = plt.subplots(figsize=(12, 6))
-    fig.patch.set_facecolor('#1e222d') # Màu nền Dark TradingView
+    fig.patch.set_facecolor('#1e222d') 
     ax.set_facecolor('#1e222d')
     
     x = np.arange(view)
     up = p_c >= p_o
     down = p_c < p_o
     
-    # Vẽ nến (Candlestick)
     ax.vlines(x[up], p_l[up], p_h[up], color='#089981', linewidth=1)
     ax.vlines(x[down], p_l[down], p_h[down], color='#f23645', linewidth=1)
     ax.bar(x[up], p_c[up] - p_o[up], 0.6, bottom=p_o[up], color='#089981')
     ax.bar(x[down], p_o[down] - p_c[down], 0.6, bottom=p_c[down], color='#f23645')
 
-    # Vẽ FVG Boxes
-    for f in fvgs:
+    # Vẽ FVG Boxes (Đã dọn dẹp)
+    for f in fvgs[-15:]: # Chỉ vẽ tối đa 15 FVG gần nhất để đỡ rối
         if f['start'] >= start_idx:
             x_start = f['start'] - start_idx
             width = view - x_start
             height = f['top'] - f['bot']
             
-            # Đổi màu giống hình (Xanh/Đỏ hoặc Xám nếu Mitigated)
             if f['mitigated']:
                 color = '#787b86'
-                alpha = 0.1
+                alpha = 0.15
             else:
                 color = '#089981' if f['type'] == 'bull' else '#f23645'
-                alpha = 0.2
+                alpha = 0.25
                 
             rect = patches.Rectangle((x_start, f['bot']), width, height, linewidth=1, edgecolor=color, facecolor=color, alpha=alpha)
             ax.add_patch(rect)
-            # Thêm Text FVG
             if not f['mitigated']:
-                ax.text(x_start + width/2, f['bot'] + height/2, 'FVG', color='white', fontsize=8, ha='center', va='center', alpha=0.7)
+                ax.text(x_start + width/2, f['bot'] + height/2, 'FVG', color='white', fontsize=7, ha='center', va='center', alpha=0.7)
 
     # Vẽ đường BOS / CHoCH
     for l in lines:
         if l['start'] >= start_idx or l['end'] >= start_idx:
             x1 = max(0, l['start'] - start_idx)
             x2 = min(view, l['end'] - start_idx)
-            
-            line_color = '#e0e3eb' if l['type'] == 'BOS' else '#ffeb3b' # BOS xám, CHOCH vàng
+            line_color = '#e0e3eb' if l['type'] == 'BOS' else '#ffeb3b'
             ax.plot([x1, x2], [l['price'], l['price']], color=line_color, linestyle='--', linewidth=1)
-            
-            # Thêm Text BOS/CHOCH
             ax.text((x1+x2)/2, l['price'], l['type'], color=line_color, fontsize=8, ha='center', va='bottom')
+
+    # Vẽ đường Xanh Dương (Current Structure High/Low)
+    x_start_h = max(0, struct_h_idx - start_idx)
+    ax.plot([x_start_h, view], [struct_high, struct_high], color='#2962FF', linestyle='-', linewidth=1.2, alpha=0.7)
+    x_start_l = max(0, struct_l_idx - start_idx)
+    ax.plot([x_start_l, view], [struct_low, struct_low], color='#2962FF', linestyle='-', linewidth=1.2, alpha=0.7)
+
+    # Vẽ Đường Lệnh Đang Chạy (Entry, SL, TP)
+    if active_trade:
+        ep = active_trade['entry']
+        sl = active_trade['sl']
+        tp = active_trade['tp']
+        
+        ax.axhline(ep, color='#e0e3eb', linestyle='-', linewidth=1.5)
+        ax.axhline(sl, color='#f23645', linestyle='-', linewidth=1.5)
+        ax.axhline(tp, color='#089981', linestyle='-', linewidth=1.5)
+        
+        ax.text(view - 2, ep, ' ENTRY', color='white', fontsize=9, ha='right', va='bottom', backgroundcolor='#787b86')
+        ax.text(view - 2, sl, ' SL', color='white', fontsize=9, ha='right', va='bottom', backgroundcolor='#f23645')
+        ax.text(view - 2, tp, ' TP', color='white', fontsize=9, ha='right', va='bottom', backgroundcolor='#089981')
+        
+        # Tô màu vùng R:R
+        ax.axhspan(ep, tp, color='#089981', alpha=0.1)
+        ax.axhspan(ep, sl, color='#f23645', alpha=0.1)
 
     ax.set_title(f'{symbol} (M5) SMC LudoGH68 Indicator', color='white')
     ax.grid(True, color='#2a2e39', linestyle='-', linewidth=0.5)
@@ -253,7 +281,6 @@ def process_backtest(chat_id, symbol, start_capital, days):
         wins, losses = 0, 0
         active_trade = None
         
-        # Chạy logic SMC từng bước để Backtest
         for i in range(150, len(closes)):
             if active_trade:
                 curr_h, curr_l = highs[i], lows[i]
@@ -280,8 +307,7 @@ def process_backtest(chat_id, symbol, start_capital, days):
             
             if balance <= (start_capital * 0.05): break 
             
-            # Phân tích SMC mảng cắt ngắn để tăng tốc
-            sig, sl, tp, _, _, _ = run_smc_engine(opens[i-150:i+1], highs[i-150:i+1], lows[i-150:i+1], closes[i-150:i+1])
+            sig, sl, tp, _, _, _, _, _, _, _ = run_smc_engine(opens[i-150:i+1], highs[i-150:i+1], lows[i-150:i+1], closes[i-150:i+1])
             
             if sig:
                 risk_amt = balance * 0.01
@@ -332,7 +358,7 @@ def scan_market(chat_id):
     for symbol in WATCHLIST_MARKET:
         opens, highs, lows, closes, _ = lay_data_binance(symbol)
         if closes is not None:
-            tin_hieu, _, _, _, _, _ = run_smc_engine(opens, highs, lows, closes)
+            tin_hieu, _, _, _, _, _, _, _, _, _ = run_smc_engine(opens, highs, lows, closes)
             if tin_hieu:
                 signals.append(f"🔥 {symbol}: {tin_hieu}")
     return signals[:10]
@@ -380,85 +406,98 @@ def execute_trade(chat_id, symbol, tin_hieu, ly_do, entry, sl, tp):
     )
     bot.send_message(chat_id, msg, parse_mode="Markdown")
 
-# --- MONITOR 24/7 ---
-def monitor_thread(chat_id):
-    bot.send_message(chat_id, "🤖 Bot SMC (BOS/CHoCH + FVG) đã sẵn sàng săn mồi 24/7...")
+# --- LUỒNG GIÁM SÁT GLOBAL (DIỆT ZOMBIE THREAD - CHỐNG SPAM) ---
+def global_monitor_thread():
+    print("🤖 Luồng giám sát Global đã khởi động!")
     while True:
         try: 
-            user = get_user_data(chat_id)
-            if not user['watching'] and not user['active_trades'] and not user['auto_watching']: 
-                time.sleep(10)
-                continue
+            # Dùng 1 luồng duy nhất duyệt qua tất cả người dùng
+            for chat_id in list(USER_DATA.keys()):
+                user = USER_DATA[chat_id]
+                
+                if not user['watching'] and not user['active_trades'] and not user['auto_watching']: 
+                    continue
 
-            current_watching = list(user['watching']) 
-            for symbol in current_watching:
-                try: 
-                    opens, highs, lows, closes, _ = lay_data_binance(symbol)
-                    if closes is not None:
-                        tin_hieu, sl, tp, ly_do, _, _ = run_smc_engine(opens, highs, lows, closes)
-                        if tin_hieu and symbol not in user['active_trades']:
-                            execute_trade(chat_id, symbol, tin_hieu, ly_do, closes[-1], sl, tp)
-                            if symbol in user['watching']: user['watching'].remove(symbol)
-                except: pass
+                # 1. Theo dõi 1 lần
+                for symbol in list(user['watching']):
+                    try: 
+                        # Chặn Cooldown
+                        if symbol in user.get('cooldowns', {}) and time.time() < user['cooldowns'][symbol]:
+                            continue
+                            
+                        opens, highs, lows, closes, _ = lay_data_binance(symbol)
+                        if closes is not None:
+                            tin_hieu, sl, tp, ly_do, _, _, _, _, _, _ = run_smc_engine(opens, highs, lows, closes)
+                            if tin_hieu and symbol not in user['active_trades']:
+                                execute_trade(chat_id, symbol, tin_hieu, ly_do, closes[-1], sl, tp)
+                                if symbol in user['watching']: user['watching'].remove(symbol)
+                    except: pass
 
-            current_auto = list(user['auto_watching']) 
-            for symbol in current_auto:
-                try: 
-                    if symbol in user['active_trades']: continue 
+                # 2. Auto 24/7
+                for symbol in list(user['auto_watching']):
+                    try: 
+                        # Chặn Cooldown
+                        if symbol in user.get('cooldowns', {}) and time.time() < user['cooldowns'][symbol]:
+                            continue
+                            
+                        if symbol in user['active_trades']: continue 
 
-                    opens, highs, lows, closes, _ = lay_data_binance(symbol)
-                    if closes is not None:
-                        tin_hieu, sl, tp, ly_do, _, _ = run_smc_engine(opens, highs, lows, closes)
-                        if tin_hieu:
-                            execute_trade(chat_id, symbol, tin_hieu, ly_do, closes[-1], sl, tp)
-                except: pass
-            
-            active_symbols = list(user['active_trades'].keys())
-            for symbol in active_symbols:
-                try:
-                    trade = user['active_trades'][symbol]
-                    _, highs, lows, closes, _ = lay_data_binance(symbol)
-                    if closes is not None:
-                        curr_h, curr_l = highs[-1], lows[-1]
-                        hit_tp, hit_sl = False, False
-                        
-                        if trade['type'] == 'LONG':
-                            if curr_h >= trade['tp']: hit_tp = True
-                            if curr_l <= trade['sl']: hit_sl = True
-                        else: 
-                            if curr_l <= trade['tp']: hit_tp = True
-                            if curr_h >= trade['sl']: hit_sl = True
-                        
-                        if hit_tp or hit_sl:
-                            if hit_tp and hit_sl: hit_tp = False
+                        opens, highs, lows, closes, _ = lay_data_binance(symbol)
+                        if closes is not None:
+                            tin_hieu, sl, tp, ly_do, _, _, _, _, _, _ = run_smc_engine(opens, highs, lows, closes)
+                            if tin_hieu:
+                                execute_trade(chat_id, symbol, tin_hieu, ly_do, closes[-1], sl, tp)
+                    except: pass
+                
+                # 3. Quản lý lệnh đang mở (Chốt lời / Cắt lỗ)
+                for symbol in list(user['active_trades'].keys()):
+                    try:
+                        trade = user['active_trades'][symbol]
+                        _, highs, lows, closes, _ = lay_data_binance(symbol)
+                        if closes is not None:
+                            curr_h, curr_l = highs[-1], lows[-1]
+                            hit_tp, hit_sl = False, False
                             
-                            close_price = trade['tp'] if hit_tp else trade['sl']
-                            move = (close_price - trade['entry']) / trade['entry'] if trade['type'] == 'LONG' else (trade['entry'] - close_price) / trade['entry']
-                            pnl = move * trade['leverage'] * trade['amount']
+                            if trade['type'] == 'LONG':
+                                if curr_h >= trade['tp']: hit_tp = True
+                                if curr_l <= trade['sl']: hit_sl = True
+                            else: 
+                                if curr_l <= trade['tp']: hit_tp = True
+                                if curr_h >= trade['sl']: hit_sl = True
                             
-                            user['balance'] += (trade['amount'] + pnl)
-                            ket_qua = "WIN 🟢" if hit_tp else "LOSS 🔴"
-                            if hit_tp: user['stats']['wins'] += 1
-                            else: user['stats']['losses'] += 1
-                            
-                            is_auto_trade = (symbol in user['auto_watching'])
-                            auto_msg = "\n🔄 *Tiếp tục rình mồi SMC...*" if is_auto_trade else "\n🏁 *Đã dừng theo dõi.*"
-                            
-                            msg_to_send = (
-                                f"🔔 **CHỐT LỆNH SMC {symbol} | {ket_qua}**\n"
-                                f"━━━━━━━━━━━━━━━━━━\n"
-                                f"📈 **Lợi nhuận:** {'+' if pnl >= 0 else ''}{fmt_money(pnl, user['currency'])}\n"
-                                f"💰 **Vốn mới:** {fmt_money(user['balance'], user['currency'])}\n"
-                                f"{auto_msg}"
-                            )
-                            
-                            del user['active_trades'][symbol]
-                            bot.send_message(chat_id, msg_to_send, parse_mode="Markdown")
-                except: pass
+                            if hit_tp or hit_sl:
+                                if hit_tp and hit_sl: hit_tp = False
+                                
+                                close_price = trade['tp'] if hit_tp else trade['sl']
+                                move = (close_price - trade['entry']) / trade['entry'] if trade['type'] == 'LONG' else (trade['entry'] - close_price) / trade['entry']
+                                pnl = move * trade['leverage'] * trade['amount']
+                                
+                                user['balance'] += (trade['amount'] + pnl)
+                                ket_qua = "WIN 🟢" if hit_tp else "LOSS 🔴"
+                                if hit_tp: user['stats']['wins'] += 1
+                                else: user['stats']['losses'] += 1
+                                
+                                is_auto_trade = (symbol in user['auto_watching'])
+                                auto_msg = "\n🔄 *Tiếp tục rình mồi SMC...*" if is_auto_trade else "\n🏁 *Đã dừng theo dõi.*"
+                                
+                                msg_to_send = (
+                                    f"🔔 **CHỐT LỆNH SMC {symbol} | {ket_qua}**\n"
+                                    f"━━━━━━━━━━━━━━━━━━\n"
+                                    f"📈 **Lợi nhuận:** {'+' if pnl >= 0 else ''}{fmt_money(pnl, user['currency'])}\n"
+                                    f"💰 **Vốn mới:** {fmt_money(user['balance'], user['currency'])}\n"
+                                    f"{auto_msg}"
+                                )
+                                
+                                # Đã sửa: Gửi tin nhắn trước, xóa lệnh sau, cài Cooldown 5 phút
+                                bot.send_message(chat_id, msg_to_send, parse_mode="Markdown")
+                                del user['active_trades'][symbol]
+                                user.setdefault('cooldowns', {})[symbol] = time.time() + 300 
+                    except: pass
 
-            time.sleep(60) 
-        except:
-            time.sleep(10)
+        except Exception as e:
+            pass
+        
+        time.sleep(60) # Luồng chỉ ngủ 60s một lần ở đây
 
 def check_all_in_safety(user, message, coins_to_add=[]):
     if user.get('is_all_in', False):
@@ -524,9 +563,6 @@ def handle_auto(message):
 
         if added:
             bot.reply_to(message, f"🔄 Đã bật chế độ **AUTO SMC 24/7** cho: {', '.join(added)}", parse_mode="Markdown")
-            if not user.get('is_monitoring', False):
-                user['is_monitoring'] = True
-                threading.Thread(target=monitor_thread, args=(chat_id,), daemon=True).start()
     except Exception as e: bot.reply_to(message, f"Lỗi: {e}")
 
 @bot.message_handler(func=lambda message: True)
@@ -621,16 +657,12 @@ def handle_msg(message):
         if not check_all_in_safety(user, message, [symbol]): return
         opens, highs, lows, closes, _ = lay_data_binance(symbol)
         if closes is None: return
-        tin_hieu, sl, tp, ly_do, _, _ = run_smc_engine(opens, highs, lows, closes)
+        tin_hieu, sl, tp, ly_do, _, _, _, _, _, _ = run_smc_engine(opens, highs, lows, closes)
         if not tin_hieu:
             p_now = closes[-1]
             tin_hieu, sl, tp = "LONG 🟢", p_now*0.9995, p_now*1.001
             ly_do = "Lệnh tay khẩn cấp"
         execute_trade(chat_id, symbol, tin_hieu, ly_do, closes[-1], sl, tp)
-        
-        if not user.get('is_monitoring', False):
-            user['is_monitoring'] = True
-            threading.Thread(target=monitor_thread, args=(chat_id,), daemon=True).start()
         return
 
     if text == "SCAN":
@@ -648,9 +680,6 @@ def handle_msg(message):
             for coin in valid:
                 if coin in user['auto_watching']: user['auto_watching'].remove(coin)
             bot.reply_to(message, f"📡 Đang rình SMC: {', '.join(valid)}")
-            if not user.get('is_monitoring', False):
-                user['is_monitoring'] = True
-                threading.Thread(target=monitor_thread, args=(chat_id,), daemon=True).start()
         return
     
     if text.startswith("AUTO "):
@@ -667,15 +696,11 @@ def handle_msg(message):
 
         if added:
             bot.reply_to(message, f"🔄 Đã bật **AUTO SMC 24/7**: {', '.join(added)}")
-            if not user.get('is_monitoring', False):
-                user['is_monitoring'] = True
-                threading.Thread(target=monitor_thread, args=(chat_id,), daemon=True).start()
         return
 
     if text == "DUNG":
         user['watching'] = []
         user['auto_watching'] = [] 
-        user['is_monitoring'] = False
         bot.reply_to(message, "🛑 Đã hủy mọi chế độ Auto/Theo dõi.")
         return
     
@@ -698,21 +723,38 @@ def handle_msg(message):
         bot.reply_to(message, msg)
         return
 
+    # BẢN VÁ LỖI: SỬA LẠI TỪ BỊ MẤT TEXT THÀNH LƯU TEXT
     symbol = text.split()[0]
-    msg = bot.reply_to(message, f"🔍 Vẽ Chart SMC TradingView {symbol}...")
+    msg = bot.reply_to(message, f"🔍 Đang phân tích Chart SMC TradingView {symbol}...")
     ty = lay_ty_gia_remitano()
     if ty: TY_GIA_USDT_CACHE = ty
     
     opens, highs, lows, closes, src = lay_data_binance(symbol)
     if closes is not None:
-        tin_hieu, _, _, ly_do, fvgs, lines = run_smc_engine(opens, highs, lows, closes)
-        photo = ve_chart_smc(symbol, opens, highs, lows, closes, fvgs, lines)
-        status = f"🚀 **{tin_hieu}**" if tin_hieu else "Giá đang chạy, chờ Setup."
-        if ly_do: status += f"\n({ly_do})"
+        active_trade = user['active_trades'].get(symbol)
+        tin_hieu, _, _, ly_do, fvgs, lines, s_high, s_low, sh_idx, sl_idx = run_smc_engine(opens, highs, lows, closes)
+        
+        photo = ve_chart_smc(symbol, opens, highs, lows, closes, fvgs, lines, s_high, s_low, sh_idx, sl_idx, active_trade)
+        
+        if active_trade:
+            curr_price = closes[-1]
+            if active_trade['type'] == 'LONG':
+                move = (curr_price - active_trade['entry']) / active_trade['entry']
+            else:
+                move = (active_trade['entry'] - curr_price) / active_trade['entry']
+                
+            pnl = move * active_trade['leverage'] * active_trade['amount']
+            pnl_sign = "+" if pnl >= 0 else ""
+            status = f"⏳ Đang giữ lệnh **{active_trade['type']}**\n📈 Lãi/lỗ tạm tính: {pnl_sign}{fmt_money(pnl, user['currency'])}"
+        else:
+            status = f"🚀 **{tin_hieu}**" if tin_hieu else "Giá đang chạy, chờ Setup."
+            if ly_do: status += f"\n({ly_do})"
+            
         gia_vnd = closes[-1] * TY_GIA_USDT_CACHE
         caption = f"📊 **{symbol} (M5 SMC Chart)**\n🇺🇸 ${closes[-1]:,.4f}\n🇻🇳 {gia_vnd:,.0f} đ\nStatus: {status}\n📡 {src}"
+        
         bot.send_photo(chat_id, photo, caption=caption, parse_mode="Markdown")
-        bot.delete_message(chat_id, msg.message_id)
+        bot.edit_message_text(f"✅ Đã vẽ xong Chart SMC cho {symbol}!", chat_id, msg.message_id) 
     else:
         gia, src, sym = lay_gia_coingecko_smart(symbol)
         if gia:
@@ -721,6 +763,8 @@ def handle_msg(message):
         else:
              bot.edit_message_text("❌ Không tìm thấy coin.", chat_id, msg.message_id)
 
-print("🤖 BOT SMC ĐANG CHẠY (BẢN TRADINGVIEW - CHART DARK MODE)...")
+print("🤖 BOT SMC ĐANG CHẠY (ĐÃ DIỆT ZOMBIE THREAD CHỐNG SPAM)...")
+# Khởi động luồng giám sát duy nhất ngay khi mở Bot
+threading.Thread(target=global_monitor_thread, daemon=True).start()
 keep_alive()
 bot.infinity_polling()
