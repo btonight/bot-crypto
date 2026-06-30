@@ -36,7 +36,10 @@ def get_user_data(chat_id):
             'active_trades': {},
             'stats': {'wins': 0, 'losses': 0},
             'is_monitoring': False,
-            'cooldowns': {} 
+            'cooldowns': {},
+            'reverse_trade': False,        # Trạng thái Đảo lệnh
+            'custom_tp_active': False,     # Trạng thái bật/tắt Tỷ lệ TP
+            'custom_tp_value': 2.0         # Giá trị Tỷ lệ TP
         }
     return USER_DATA[chat_id]
 
@@ -54,7 +57,7 @@ def get_max_leverage(symbol):
     elif sym in ['BNB', 'SOL', 'XRP', 'ADA', 'AVAX', 'LINK', 'LTC', 'DOT', 'MATIC', 'NEAR', 'ATOM', 'FTM', 'SAND', 'SUI', 'APT', 'ARB', 'OP']: 
         return 75
     else: 
-        return 50 # Các đồng Meme hoặc Low cap (DOGE, PEPE, SHIB, WIF...)
+        return 50 
 
 # --- HÀM GỬI TIN NHẮN CHỐNG MẤT KẾT NỐI ---
 def send_alert(chat_id, msg_text):
@@ -121,8 +124,8 @@ def lay_gia_coingecko_smart(symbol):
     except: pass
     return None, None, None
 
-# --- ENGINE SMC THEO CHUẨN PINE SCRIPT ---
-def run_smc_engine(opens, highs, lows, closes):
+# --- ENGINE SMC THEO CHUẨN PINE SCRIPT (CÓ CHỨC NĂNG ĐẢO LỆNH & R:R) ---
+def run_smc_engine(opens, highs, lows, closes, rr_ratio=2.0, reverse=False):
     fvgs = [] 
     lines = [] 
     
@@ -182,16 +185,34 @@ def run_smc_engine(opens, highs, lows, closes):
             for f in reversed(fvgs):
                 if not f['mitigated']:
                     if direction == 2 and f['type'] == 'bull' and lows[i] <= f['top'] and closes[i] > f['bot']:
-                        signal = "LONG 🟢"
-                        reason = "Uptrend (BOS/CHoCH) + Retest FVG"
-                        sl = f['bot'] * 0.9995
-                        tp = closes[i] + (closes[i] - sl) * 2.0
+                        orig_sl = f['bot'] * 0.9995
+                        orig_entry = closes[i]
+                        
+                        if not reverse:
+                            signal = "LONG 🟢"
+                            reason = "Uptrend (BOS/CHoCH) + Retest FVG"
+                            sl = orig_sl
+                            tp = orig_entry + (orig_entry - sl) * rr_ratio
+                        else:
+                            signal = "SHORT 🔴 (Đảo lệnh)"
+                            reason = "Đảo lệnh từ Uptrend FVG (SL thành TP)"
+                            tp = orig_sl # Lấy SL cũ làm TP
+                            sl = orig_entry + (orig_entry - tp) / rr_ratio # Tự đo lại SL mới theo tỷ lệ
                         break
                     elif direction == 1 and f['type'] == 'bear' and highs[i] >= f['bot'] and closes[i] < f['top']:
-                        signal = "SHORT 🔴"
-                        reason = "Downtrend (BOS/CHoCH) + Retest FVG"
-                        sl = f['top'] * 1.0005
-                        tp = closes[i] - (sl - closes[i]) * 2.0
+                        orig_sl = f['top'] * 1.0005
+                        orig_entry = closes[i]
+                        
+                        if not reverse:
+                            signal = "SHORT 🔴"
+                            reason = "Downtrend (BOS/CHoCH) + Retest FVG"
+                            sl = orig_sl
+                            tp = orig_entry - (sl - orig_entry) * rr_ratio
+                        else:
+                            signal = "LONG 🟢 (Đảo lệnh)"
+                            reason = "Đảo lệnh từ Downtrend FVG (SL thành TP)"
+                            tp = orig_sl # Lấy SL cũ làm TP
+                            sl = orig_entry - (tp - orig_entry) / rr_ratio # Tự đo lại SL mới theo tỷ lệ
                         break
 
     return signal, sl, tp, reason, fvgs, lines, struct_high, struct_low, struct_h_idx, struct_l_idx
@@ -288,7 +309,10 @@ def process_backtest(chat_id, symbol, start_capital, days):
         balance = start_capital
         wins, losses = 0, 0
         active_trade = None
+        
         current_risk_percent = user.get('risk_percent', 1.0) 
+        current_rr = user.get('custom_tp_value', 2.0) if user.get('custom_tp_active', False) else 2.0
+        is_rev = user.get('reverse_trade', False)
         
         max_leverage_allowed = get_max_leverage(symbol)
 
@@ -318,7 +342,7 @@ def process_backtest(chat_id, symbol, start_capital, days):
             
             if balance <= (start_capital * 0.05): break 
             
-            sig, sl, tp, _, _, _, _, _, _, _ = run_smc_engine(opens[i-150:i+1], highs[i-150:i+1], lows[i-150:i+1], closes[i-150:i+1])
+            sig, sl, tp, _, _, _, _, _, _, _ = run_smc_engine(opens[i-150:i+1], highs[i-150:i+1], lows[i-150:i+1], closes[i-150:i+1], current_rr, is_rev)
             
             if sig:
                 risk_amt = balance * (current_risk_percent / 100.0)
@@ -346,11 +370,15 @@ def process_backtest(chat_id, symbol, start_capital, days):
         emoji = "🚀 TO THE MOON" if pnl_total >= 0 else "🩸 ĐỔ MÁU"
         if balance < (start_capital * 0.05): emoji = "💀 CHÁY TÀI KHOẢN"
 
+        rev_status = "Đảo Lệnh BẬT 🔄" if is_rev else "Thuận Xu Hướng ➡️"
+        rr_status = f"1:{current_rr}"
+        
         msg = (
             f"📊 **BÁO CÁO BACKTEST SMC PINESCRIPT** 📊\n"
             f"🪙 **Coin:** {symbol} (Khung M5)\n"
             f"🗓 **Thời gian:** {days} Ngày ({count} nến)\n"
-            f"⚙️ **Đòn bẩy max:** x{max_leverage_allowed} | **Risk:** {current_risk_percent}%\n"
+            f"⚙️ **Tỷ lệ TP (R:R):** {rr_status} | **Risk:** {current_risk_percent}%\n"
+            f"🔄 **Chiến thuật:** {rev_status}\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"💵 **Vốn ban đầu:** {fmt_money(start_capital, 'USDT')}\n"
             f"🏁 **Vốn hiện tại:** {fmt_money(balance, 'USDT')}\n"
@@ -360,8 +388,6 @@ def process_backtest(chat_id, symbol, start_capital, days):
             f"🥀 **Thua:** {losses} lệnh\n"
             f"🔄 **Tổng giao dịch:** {total_trades} lệnh\n"
             f"🎯 **Tỷ lệ Win (Winrate):** {win_rate:.1f}%\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"💡 *Thuật toán: Chờ Đóng Nến + Retest FVG.* "
         )
         send_alert(chat_id, msg)
     except Exception as e:
@@ -370,11 +396,15 @@ def process_backtest(chat_id, symbol, start_capital, days):
 # --- EXECUTE ---
 def scan_market(chat_id):
     bot.send_message(chat_id, "📡 **Đang quét SMC (Chỉ lấy nến đã đóng)...**", parse_mode="Markdown")
+    user = get_user_data(chat_id)
+    current_rr = user.get('custom_tp_value', 2.0) if user.get('custom_tp_active', False) else 2.0
+    is_rev = user.get('reverse_trade', False)
+    
     signals = []
     for symbol in WATCHLIST_MARKET:
         opens, highs, lows, closes, _ = lay_data_binance(symbol)
         if closes is not None:
-            tin_hieu, _, _, _, _, _, _, _, _, _ = run_smc_engine(opens[:-1], highs[:-1], lows[:-1], closes[:-1])
+            tin_hieu, _, _, _, _, _, _, _, _, _ = run_smc_engine(opens[:-1], highs[:-1], lows[:-1], closes[:-1], current_rr, is_rev)
             if tin_hieu:
                 signals.append(f"🔥 {symbol}: {tin_hieu}")
     return signals[:10]
@@ -446,13 +476,16 @@ def global_monitor_thread():
                 user = USER_DATA[chat_id]
                 if not user['watching'] and not user['active_trades'] and not user['auto_watching']: 
                     continue
+                
+                current_rr = user.get('custom_tp_value', 2.0) if user.get('custom_tp_active', False) else 2.0
+                is_rev = user.get('reverse_trade', False)
 
                 for symbol in list(user['watching']):
                     try: 
                         if symbol in user.get('cooldowns', {}) and time.time() < user['cooldowns'][symbol]: continue
                         opens, highs, lows, closes, _ = lay_data_binance(symbol)
                         if closes is not None:
-                            tin_hieu, sl, tp, ly_do, _, _, _, _, _, _ = run_smc_engine(opens[:-1], highs[:-1], lows[:-1], closes[:-1])
+                            tin_hieu, sl, tp, ly_do, _, _, _, _, _, _ = run_smc_engine(opens[:-1], highs[:-1], lows[:-1], closes[:-1], current_rr, is_rev)
                             if tin_hieu and symbol not in user['active_trades']:
                                 execute_trade(chat_id, symbol, tin_hieu, ly_do, closes[-1], sl, tp) 
                                 if symbol in user['watching']: user['watching'].remove(symbol)
@@ -465,7 +498,7 @@ def global_monitor_thread():
 
                         opens, highs, lows, closes, _ = lay_data_binance(symbol)
                         if closes is not None:
-                            tin_hieu, sl, tp, ly_do, _, _, _, _, _, _ = run_smc_engine(opens[:-1], highs[:-1], lows[:-1], closes[:-1])
+                            tin_hieu, sl, tp, ly_do, _, _, _, _, _, _ = run_smc_engine(opens[:-1], highs[:-1], lows[:-1], closes[:-1], current_rr, is_rev)
                             if tin_hieu:
                                 execute_trade(chat_id, symbol, tin_hieu, ly_do, closes[-1], sl, tp)
                     except: pass
@@ -533,26 +566,25 @@ def send_help(message):
         "🛠 **1. CÀI ĐẶT VỐN & RỦI RO:**\n"
         "   👉 `/Von 500`: Set vốn 500 USDT.\n"
         "   👉 `/Ruiro 2`: Chỉnh mức rủi ro cắt lỗ (Ví dụ 2% tài khoản).\n"
-        "   👉 `/Cuoc all`: Đánh 100% vốn.\n"
-        "   ℹ️ *Mặc định Bot tự động tính vol lệnh Risk 1% tài khoản chuẩn Quỹ.*\n\n"
+        "   👉 `/Ty le tp [1.3 / 1.5 / 2] [on/off]`: Cài đặt tỷ lệ Chốt Lời (VD: `ty le tp 1.5 on`).\n"
+        "   👉 `/Doi lenh [on/off]`: Bật/Tắt chế độ Đảo lệnh (Buy->Sell, SL->TP).\n\n"
         "🧪 **2. BACKTEST SMC (SIÊU TỐC):**\n"
         "   👉 `Backtest [Coin] Von [Tiền]`: Test 7 ngày.\n"
         "   👉 `Backtest 1 thang [Coin] Von [Tiền]`: Test 30 ngày.\n\n"
         "🚀 **3. SĂN KÈO SMC (M5 BOS + FVG - CHỜ ĐÓNG NẾN):**\n"
         "   👉 `Entry now [Coin]`: Vào lệnh tay NGAY LẬP TỨC.\n"
-        "   👉 `Entry now [Coin] von [Số tiền]`: Vào lệnh tay và cài luôn vốn mới (VD: Entry now btc von 5).\n"
+        "   👉 `Entry now [Coin] von [Số tiền]`: Cài luôn vốn mới rồi bóp cò.\n"
         "   👉 `Scan`: Quét 10 coin có tín hiệu FVG.\n"
         "   👉 `Theo doi [Coin]`: Canh tín hiệu -> Vào lệnh -> Xong thì Dừng.\n"
         "   👉 `/Auto [Coin]`: Canh tín hiệu -> Vào lệnh -> Xong thì Lặp lại 24/7.\n\n"
         "📊 **4. TIỆN ÍCH KHÁC:**\n"
         "   👉 `Thong ke`: Xem tỷ lệ thắng/thua.\n"
         "   👉 `Dung`: Dừng tất cả (Cả Auto và Theo dõi).\n"
-        "   👉 Nhập tên Coin bất kỳ (VD: `PEPE`) để xem Chart M5 SMC.\n\n"
+        "   👉 Nhập tên Coin (VD: `PEPE`) để xem Chart M5 SMC.\n\n"
         "--------------------------\n"
-        f"💳 Ví: **USDT** (Đã loại bỏ VNDC)\n"
         f"💰 Vốn: **{fmt_money(user['balance'], 'USDT')}**\n"
-        f"🛡 Rủi ro hiện tại: **{user.get('risk_percent', 1.0)}%**\n"
-        f"💵 Chế độ cược: **{'ALL-IN (100%)' if user['is_all_in'] else 'Quản lý vốn Auto'}**"
+        f"🛡 Rủi ro: **{user.get('risk_percent', 1.0)}%** | R:R: **1:{user.get('custom_tp_value', 2.0) if user.get('custom_tp_active') else 2.0}**\n"
+        f"🔄 Đảo lệnh: **{'BẬT' if user.get('reverse_trade') else 'TẮT'}**"
     )
     bot.reply_to(message, help_text, parse_mode="Markdown")
 
@@ -583,6 +615,43 @@ def handle_msg(message):
     chat_id = message.chat.id
     user = get_user_data(chat_id)
     
+    # --- ĐẢO LỆNH ---
+    if text.startswith("/DOI LENH") or text.startswith("DOI LENH") or text.startswith("ĐỔI LỆNH"):
+        if "ON" in text:
+            user['reverse_trade'] = True
+            bot.reply_to(message, "🔄 Đã BẬT chế độ **ĐẢO LỆNH**. (Bot sẽ đánh ngược tín hiệu, SL cũ biến thành TP mới)")
+        elif "OFF" in text:
+            user['reverse_trade'] = False
+            bot.reply_to(message, "✅ Đã TẮT chế độ Đảo lệnh. (Bot đánh thuận xu hướng SMC bình thường)")
+        else:
+            bot.reply_to(message, "⚠️ Cú pháp: `doi lenh on` hoặc `doi lenh off`")
+        return
+
+    # --- TỶ LỆ TP ---
+    if text.startswith("/TY LE TP") or text.startswith("TY LE TP") or text.startswith("TỶ LỆ TP"):
+        parts = text.split()
+        if "OFF" in parts:
+            user['custom_tp_active'] = False
+            bot.reply_to(message, "✅ Đã TẮT tùy chỉnh tỷ lệ TP. (Trở về mặc định 1:2)")
+        elif "ON" in parts:
+            nums = re.findall(r'[\d\.]+', text)
+            if nums:
+                try:
+                    val = float(nums[0])
+                    if val in [1.3, 1.5, 2.0]:
+                        user['custom_tp_active'] = True
+                        user['custom_tp_value'] = val
+                        bot.reply_to(message, f"🎯 Đã BẬT tùy chỉnh tỷ lệ Chốt Lời: **1:{val}**")
+                    else:
+                        bot.reply_to(message, "⚠️ Chỉ hỗ trợ 3 tỷ lệ: 1.3, 1.5, hoặc 2 (như hình bạn yêu cầu).")
+                except:
+                    bot.reply_to(message, "⚠️ Lỗi đọc tỷ lệ.")
+            else:
+                bot.reply_to(message, "⚠️ Vui lòng nhập tỷ lệ. VD: `ty le tp 1.5 on`")
+        else:
+            bot.reply_to(message, "⚠️ Cú pháp: `ty le tp [1.3/1.5/2] [on/off]`")
+        return
+
     if text.startswith("/RUIRO") or text.startswith("RUI RO") or text.startswith("RỦI RO"):
         nums = re.findall(r'[\d\.]+', text)
         if nums:
@@ -662,7 +731,6 @@ def handle_msg(message):
             bot.reply_to(message, f"⚠️ Lỗi cú pháp Backtest!")
         return
 
-    # --- BỘ LỌC ENTRY NOW MỚI ---
     if text.startswith("ENTRY NOW"):
         clean_text = text.replace("ENTRY NOW", "").strip()
         parts = clean_text.split()
@@ -686,11 +754,19 @@ def handle_msg(message):
         if closes is None: 
             return bot.reply_to(message, f"❌ Lỗi: Không thể lấy dữ liệu biểu đồ cho `{symbol}` từ Binance.")
             
-        tin_hieu, sl, tp, ly_do, _, _, _, _, _, _ = run_smc_engine(opens[:-1], highs[:-1], lows[:-1], closes[:-1])
+        current_rr = user.get('custom_tp_value', 2.0) if user.get('custom_tp_active', False) else 2.0
+        is_rev = user.get('reverse_trade', False)
+        
+        tin_hieu, sl, tp, ly_do, _, _, _, _, _, _ = run_smc_engine(opens[:-1], highs[:-1], lows[:-1], closes[:-1], current_rr, is_rev)
+        
         if not tin_hieu:
             p_now = closes[-1]
-            tin_hieu, sl, tp = "LONG 🟢", p_now*0.9995, p_now*1.001
+            if not is_rev:
+                tin_hieu, sl, tp = "LONG 🟢", p_now*0.9995, p_now + (p_now - p_now*0.9995) * current_rr
+            else:
+                tin_hieu, sl, tp = "SHORT 🔴 (Đảo lệnh)", p_now + (p_now - p_now*0.9995) / current_rr, p_now*0.9995
             ly_do = "Lệnh tay khẩn cấp"
+            
         execute_trade(chat_id, symbol, tin_hieu, ly_do, closes[-1], sl, tp)
         return
     
@@ -760,7 +836,11 @@ def handle_msg(message):
     opens, highs, lows, closes, src = lay_data_binance(symbol)
     if closes is not None:
         active_trade = user['active_trades'].get(symbol)
-        tin_hieu, _, _, ly_do, fvgs, lines, s_high, s_low, sh_idx, sl_idx = run_smc_engine(opens, highs, lows, closes)
+        
+        current_rr = user.get('custom_tp_value', 2.0) if user.get('custom_tp_active', False) else 2.0
+        is_rev = user.get('reverse_trade', False)
+        
+        tin_hieu, _, _, ly_do, fvgs, lines, s_high, s_low, sh_idx, sl_idx = run_smc_engine(opens, highs, lows, closes, current_rr, is_rev)
         
         photo = ve_chart_smc(symbol, opens, highs, lows, closes, fvgs, lines, s_high, s_low, sh_idx, sl_idx, active_trade)
         
@@ -775,7 +855,7 @@ def handle_msg(message):
             pnl_sign = "+" if pnl >= 0 else ""
             status = f"⏳ Đang giữ lệnh **{active_trade['type']}**\n📈 Lãi/lỗ tạm tính: {pnl_sign}{fmt_money(pnl, 'USDT')}"
         else:
-            tin_hieu_confirmed, _, _, ly_do_confirmed, _, _, _, _, _, _ = run_smc_engine(opens[:-1], highs[:-1], lows[:-1], closes[:-1])
+            tin_hieu_confirmed, _, _, ly_do_confirmed, _, _, _, _, _, _ = run_smc_engine(opens[:-1], highs[:-1], lows[:-1], closes[:-1], current_rr, is_rev)
             status = f"🚀 **{tin_hieu_confirmed}**" if tin_hieu_confirmed else "Giá đang chạy, chờ Setup."
             if ly_do_confirmed: status += f"\n({ly_do_confirmed})"
             
@@ -790,7 +870,7 @@ def handle_msg(message):
         else:
              bot.edit_message_text("❌ Không tìm thấy coin.", chat_id, msg.message_id)
 
-print("🤖 BOT SMC ĐANG CHẠY (FIX ENTRY NOW + TỪ ĐIỂN ĐÒN BẨY)...")
+print("🤖 BOT SMC ĐANG CHẠY (BỔ SUNG ĐẢO LỆNH & TỶ LỆ R:R)...")
 threading.Thread(target=global_monitor_thread, daemon=True).start()
 keep_alive()
 bot.infinity_polling()
