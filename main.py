@@ -28,6 +28,7 @@ def get_user_data(chat_id):
         USER_DATA[chat_id] = {
             'balance': 500.0,      # Mặc định vốn USDT
             'bet_amount': 50.0,    # Mặc định cược USDT
+            'risk_percent': 1.0,   # Mặc định rủi ro 1%
             'is_all_in': False,   
             'currency': 'USDT',    # Chỉ còn USDT
             'watching': [],       
@@ -278,7 +279,7 @@ def ve_chart_smc(symbol, opens, highs, lows, closes, fvgs, lines, struct_high, s
 
 # --- BACKTEST ---
 def process_backtest(chat_id, symbol, start_capital, days):
-    """Hàm backtest (đã cập nhật chỉ dùng USDT)"""
+    """Hàm backtest (Đã tích hợp quản lý rủi ro động)"""
     user = get_user_data(chat_id)
     try:
         opens, highs, lows, closes, count = lay_data_lich_su(symbol, days=days)
@@ -287,9 +288,9 @@ def process_backtest(chat_id, symbol, start_capital, days):
             return
 
         balance = start_capital
-        leverage = 30
         wins, losses = 0, 0
         active_trade = None
+        current_risk_percent = user.get('risk_percent', 1.0) # Lấy % rủi ro người dùng cài
         
         for i in range(150, len(closes)):
             if active_trade:
@@ -309,7 +310,8 @@ def process_backtest(chat_id, symbol, start_capital, days):
                     close_p = active_trade['tp'] if res == 'WIN' else active_trade['sl']
                     move = (close_p - entry)/entry if active_trade['type'] == 'LONG' else (entry - close_p)/entry
                     
-                    balance += move * leverage * amt
+                    # Dùng đòn bẩy tự động đã lưu trong lệnh
+                    balance += move * active_trade['leverage'] * amt
                     if res == 'WIN': wins += 1
                     else: losses += 1
                     active_trade = None
@@ -320,18 +322,24 @@ def process_backtest(chat_id, symbol, start_capital, days):
             sig, sl, tp, _, _, _, _, _, _, _ = run_smc_engine(opens[i-150:i+1], highs[i-150:i+1], lows[i-150:i+1], closes[i-150:i+1])
             
             if sig:
-                risk_amt = balance * 0.01
+                risk_amt = balance * (current_risk_percent / 100.0)
                 entry = closes[i]
                 dist_pct = abs(entry - sl) / entry
                 if dist_pct == 0: dist_pct = 0.001
                 
-                margin_needed = (risk_amt / dist_pct) / leverage
+                # --- AUTO LEVERAGE CHO BACKTEST ---
+                dynamic_leverage = int(1 / dist_pct)
+                if dynamic_leverage < 1: dynamic_leverage = 1
+                if dynamic_leverage > 125: dynamic_leverage = 125
+                
+                margin_needed = (risk_amt / dist_pct) / dynamic_leverage
                 if margin_needed > balance: margin_needed = balance
                 
                 active_trade = {
                     'type': 'LONG' if 'LONG' in sig else 'SHORT',
                     'entry': entry, 'sl': sl, 'tp': tp, 
-                    'amount': margin_needed 
+                    'amount': margin_needed,
+                    'leverage': dynamic_leverage # Lưu đòn bẩy động
                 }
 
         total_trades = wins + losses
@@ -344,7 +352,7 @@ def process_backtest(chat_id, symbol, start_capital, days):
             f"📊 **BÁO CÁO BACKTEST SMC PINESCRIPT** 📊\n"
             f"🪙 **Coin:** {symbol} (Khung M5)\n"
             f"🗓 **Thời gian:** {days} Ngày ({count} nến)\n"
-            f"⚙️ **Đòn bẩy:** x{leverage} | **Risk:** 1%\n"
+            f"⚙️ **Đòn bẩy:** Auto | **Risk:** {current_risk_percent}%\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"💵 **Vốn ban đầu:** {fmt_money(start_capital, 'USDT')}\n"
             f"🏁 **Vốn hiện tại:** {fmt_money(balance, 'USDT')}\n"
@@ -375,7 +383,7 @@ def scan_market(chat_id):
     return signals[:10]
 
 def execute_trade(chat_id, symbol, tin_hieu, ly_do, entry, sl, tp):
-    """Thực hiện lệnh giao dịch (đã cập nhật chỉ dùng USDT)"""
+    """Thực hiện lệnh giao dịch (Đã cập nhật UI Rủi ro + Khoảng cách)"""
     user = get_user_data(chat_id)
     if user['balance'] <= 0:
         if not user.get('out_of_money_warned'):
@@ -385,19 +393,33 @@ def execute_trade(chat_id, symbol, tin_hieu, ly_do, entry, sl, tp):
     
     user['out_of_money_warned'] = False
     
-    risk_amount = user['balance'] * 0.01 
+    # --- BỘ NÃO QUẢN LÝ VỐN TỰ ĐỘNG ---
+    current_risk_percent = user.get('risk_percent', 1.0)
+    risk_factor = current_risk_percent / 100.0
+    risk_amount = user['balance'] * risk_factor
+    
+    # Tính % khoảng cách SL
     dist_pct = abs(entry - sl) / entry
     if dist_pct == 0: dist_pct = 0.001
+    dist_pct_display = dist_pct * 100  # Chuyển ra % để hiển thị
     
-    margin_needed = (risk_amount / dist_pct) / 30 
-    note = " (Risk 1% SMC)"
+    # Tự động tính Đòn bẩy tối đa
+    dynamic_leverage = int(1 / dist_pct)
+    if dynamic_leverage < 1: dynamic_leverage = 1
+    if dynamic_leverage > 125: dynamic_leverage = 125
     
+    # Tính Số tiền Ký quỹ (Margin)
+    margin_needed = (risk_amount / dist_pct) / dynamic_leverage 
+    note = f" (Risk {current_risk_percent}% - Auto Margin)"
+    
+    # Xử lý trường hợp All-in
     if user.get('is_all_in', False):
         margin_needed = user['balance']
         note = " (ALL-IN CHÁY MÁY 🔥)"
 
     if margin_needed > user['balance']: 
         margin_needed = user['balance']
+    # --- KẾT THÚC BỘ NÃO ---
     
     msg = (
         f"🚀 **ENTRY SMC MỚI: {symbol}**\n"
@@ -407,24 +429,26 @@ def execute_trade(chat_id, symbol, tin_hieu, ly_do, entry, sl, tp):
         f"━━━━━━━━━━━━━━━━━━\n"
         f"📍 **Entry:** ${entry:,.4f}\n"
         f"💸 **Ký quỹ:** {fmt_money(margin_needed, 'USDT')}{note}\n"
-        f"🛑 **Stoploss (SL):** ${sl:,.4f}\n"
+        f"⚡ **Đòn bẩy:** x{dynamic_leverage} (Tự động)\n"
+        f"🛑 **Stoploss (SL):** ${sl:,.4f} ({dist_pct_display:.2f}%)\n"
         f"🎯 **Takeprofit (TP):** ${tp:,.4f}\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"💰 **Số dư ví:** {fmt_money(user['balance'] - margin_needed, 'USDT')}"
     )
     
-    # CHỈ KHI GỬI TIN NHẮN THÀNH CÔNG MỚI ĐƯỢC GHI LẠI LỆNH (Tránh vô lệnh ngầm)
+    # CHỈ KHI GỬI TIN NHẮN THÀNH CÔNG MỚI ĐƯỢC GHI LẠI LỆNH
     if send_alert(chat_id, msg):
         user['balance'] -= margin_needed
         user['active_trades'][symbol] = {
             'type': 'LONG' if 'LONG' in tin_hieu else 'SHORT',
             'entry': entry, 'sl': sl, 'tp': tp, 
-            'amount': margin_needed, 'leverage': 30 
+            'amount': margin_needed, 
+            'leverage': dynamic_leverage 
         }
 
 # --- LUỒNG GIÁM SÁT GLOBAL ---
 def global_monitor_thread():
-    """Luồng giám sát toàn cục (giữ nguyên hoàn toàn)"""
+    """Luồng giám sát toàn cục (giữ nguyên)"""
     print("🤖 Luồng giám sát Global đã khởi động (Chờ đóng nến)!")
     while True:
         try: 
@@ -491,7 +515,6 @@ def global_monitor_thread():
                                 )
                                 
                                 send_alert(chat_id, msg_to_send)
-                                # Cập nhật tiền, xóa lệnh và cài hồi chiêu 5 phút (chống spam)
                                 user['balance'] += (trade['amount'] + pnl)
                                 if hit_tp: user['stats']['wins'] += 1
                                 else: user['stats']['losses'] += 1
@@ -515,13 +538,13 @@ def check_all_in_safety(user, message, coins_to_add=[]):
 # --- BOT COMMANDS ---
 @bot.message_handler(commands=['start', 'help'])
 def send_help(message):
-    """Lệnh help (đã cập nhật chỉ cho USDT)"""
+    """Lệnh help (Đã update hướng dẫn Rui ro)"""
     user = get_user_data(message.chat.id)
     help_text = (
         "📖 **HƯỚNG DẪN BOT SMC (PINE SCRIPT)** 📖\n\n"
         "🛠 **1. CÀI ĐẶT VỐN & RỦI RO:**\n"
         "   👉 `/Von 500`: Set vốn 500 USDT.\n"
-        "   👉 `/Cuoc 50`: Cài tiền đi từng lệnh 50 USDT.\n"
+        "   👉 `/Ruiro 2`: Chỉnh mức rủi ro cắt lỗ (Ví dụ 2% tài khoản).\n"
         "   👉 `/Cuoc all`: Đánh 100% vốn.\n"
         "   ℹ️ *Mặc định Bot tự động tính vol lệnh Risk 1% tài khoản chuẩn Quỹ.*\n\n"
         "🧪 **2. BACKTEST SMC (SIÊU TỐC):**\n"
@@ -543,7 +566,8 @@ def send_help(message):
         "--------------------------\n"
         f"💳 Ví: **USDT** (Đã loại bỏ VNDC)\n"
         f"💰 Vốn: **{fmt_money(user['balance'], 'USDT')}**\n"
-        f"💵 Chế độ cược: **{'ALL-IN (100%)' if user['is_all_in'] else 'Risk 1% SMC'}**"
+        f"🛡 Rủi ro hiện tại: **{user.get('risk_percent', 1.0)}%**\n"
+        f"💵 Chế độ cược: **{'ALL-IN (100%)' if user['is_all_in'] else 'Quản lý vốn Auto'}**"
     )
     bot.reply_to(message, help_text, parse_mode="Markdown")
 
@@ -571,14 +595,28 @@ def handle_auto(message):
 
 @bot.message_handler(func=lambda message: True)
 def handle_msg(message):
-    """Xử lý tin nhắn (đã cập nhật loại bỏ VNDC)"""
+    """Xử lý tin nhắn (Bổ sung lệnh Rủi ro)"""
     text = message.text.strip().upper()
     chat_id = message.chat.id
     user = get_user_data(chat_id)
     
+    # --- CÀI ĐẶT RỦI RO ---
+    if text.startswith("/RUIRO") or text.startswith("RUI RO") or text.startswith("RỦI RO"):
+        nums = re.findall(r'[\d\.]+', text)
+        if nums:
+            try:
+                val = float(nums[0])
+                if val <= 0: val = 1.0
+                user['risk_percent'] = val
+                bot.reply_to(message, f"🛡 **Đã cập nhật mức Rủi ro:** {val}% / lệnh", parse_mode="Markdown")
+            except: pass
+        else:
+            bot.reply_to(message, "⚠️ Cú pháp sai. Hãy gõ ví dụ: `/ruiro 2` hoặc `rui ro 1.5`")
+        return
+
+    # --- CÀI ĐẶT VỐN ---
     if text.startswith("VON ") or text.startswith("VỐN "):
         parts = text.split()
-        # Chỉ xử lý lệnh set vốn đơn giản, không còn chuyển đổi tiền tệ
         if len(parts) == 2:
             try:
                 val = float(parts[1].replace(',', ''))
@@ -586,7 +624,7 @@ def handle_msg(message):
                 bot.reply_to(message, f"✅ Đã set vốn: **{fmt_money(val, 'USDT')}**", parse_mode="Markdown")
             except: pass
             return
-        elif len(parts) >= 3 and parts[1] in ["USDT"]:  # Chỉ còn hỗ trợ USDT
+        elif len(parts) >= 3 and parts[1] in ["USDT"]: 
             curr = parts[1]
             try:
                 val = float(parts[2].replace(',', ''))
@@ -595,8 +633,6 @@ def handle_msg(message):
                 bot.reply_to(message, f"✅ Đã set lại ví: **{curr}**\n💰 Vốn: **{fmt_money(val, curr)}**", parse_mode="Markdown")
             except: pass
             return
-
-    # Xóa hoàn toàn phần xử lý lệnh CHUYEN chuyển đổi tiền tệ
     
     if text.startswith("CUOC ") or text.startswith("CƯỢC "):
         parts = text.split()
@@ -609,12 +645,12 @@ def handle_msg(message):
                     val = float(parts[1].replace(',', ''))
                     user['is_all_in'] = False
                     user['bet_amount'] = val
-                    bot.reply_to(message, f"✅ Đã tắt ALL-IN và set cược cố định: **{fmt_money(val, 'USDT')}**", parse_mode="Markdown")
+                    bot.reply_to(message, f"✅ Đã tắt ALL-IN. Vui lòng dùng lệnh `/ruiro` để quản lý vốn chuẩn hơn.", parse_mode="Markdown")
                 except: pass
         return
 
     if text in ["XEM VON", "VỐN"]:
-        bot.reply_to(message, f"💳 Ví: **USDT**\n💰 Vốn: **{fmt_money(user['balance'], 'USDT')}**\n💵 Chế độ cược: **{'ALL-IN' if user['is_all_in'] else 'Risk 1% SMC'}**", parse_mode="Markdown")
+        bot.reply_to(message, f"💳 Ví: **USDT**\n💰 Vốn: **{fmt_money(user['balance'], 'USDT')}**\n🛡 Rủi ro cài đặt: **{user.get('risk_percent', 1.0)}%**\n💵 Chế độ cược: **{'ALL-IN' if user['is_all_in'] else 'Quản lý vốn Auto'}**", parse_mode="Markdown")
         return
 
     if text.startswith("BACKTEST"):
@@ -634,13 +670,12 @@ def handle_msg(message):
                 if match: symbol = match.group(1)
                 else: return bot.reply_to(message, "⚠️ Nhập sai cú pháp. VD: `Backtest 1 thang BTC Von 100`")
             
-            # Chỉ còn dùng USDT cho vốn giả định
             cap = 100.0
             if len(parts) > 1:
                 nums = re.findall(r'\d+', parts[1])
                 if nums: cap = float(''.join(nums))
                 
-            bot.reply_to(message, f"⏳ **Đang Backtest SMC (Chờ Đóng Nến)...**\n🪙 Coin: **{symbol}**\n🗓 Thời gian: **{'30 Ngày' if days==30 else '7 Ngày'}**\n💰 Vốn giả định: **{fmt_money(cap, 'USDT')}**")
+            bot.reply_to(message, f"⏳ **Đang Backtest SMC (Chờ Đóng Nến)...**\n🪙 Coin: **{symbol}**\n🗓 Thời gian: **{'30 Ngày' if days==30 else '7 Ngày'}**\n💰 Vốn giả định: **{fmt_money(cap, 'USDT')}**\n🛡 Mức Rủi ro test: **{user.get('risk_percent', 1.0)}%**")
             threading.Thread(target=process_backtest, args=(chat_id, symbol, cap, days)).start()
         except:
             bot.reply_to(message, f"⚠️ Lỗi cú pháp Backtest!")
@@ -661,7 +696,8 @@ def handle_msg(message):
     
     if text == "SCAN":
         res = scan_market(chat_id)
-        if res: bot.reply_to(message, "🔍 **KÈO SMC M5:**\n" + "\n".join(res))
+        if res: 
+            bot.reply_to(message, "🔍 **KÈO SMC M5:**\n" + "\n".join(res))
         else: bot.reply_to(message, "Thị trường xấu, chưa có kèo.")
         return
     
@@ -717,7 +753,7 @@ def handle_msg(message):
         bot.reply_to(message, msg)
         return
 
-    # Xử lý xem chart - đã loại bỏ hiển thị giá VNDC
+    # Xử lý xem chart 
     symbol = text.split()[0]
     msg = bot.reply_to(message, f"🔍 Đang phân tích Chart SMC TradingView {symbol}...")
     
@@ -743,7 +779,6 @@ def handle_msg(message):
             status = f"🚀 **{tin_hieu_confirmed}**" if tin_hieu_confirmed else "Giá đang chạy, chờ Setup."
             if ly_do_confirmed: status += f"\n({ly_do_confirmed})"
             
-        # Đã loại bỏ hiển thị giá VNDC, chỉ còn giá USD
         caption = f"📊 **{symbol} (M5 SMC Chart)**\n🇺🇸 ${closes[-1]:,.4f}\nStatus: {status}\n📡 {src}"
         
         bot.send_photo(chat_id, photo, caption=caption, parse_mode="Markdown")
@@ -751,12 +786,11 @@ def handle_msg(message):
     else:
         gia, src, sym = lay_gia_coingecko_smart(symbol)
         if gia:
-             # Đã loại bỏ hiển thị giá VNDC
              bot.edit_message_text(f"💰 {sym}: ${gia:,.6f}\n📡 {src}", chat_id, msg.message_id)
         else:
              bot.edit_message_text("❌ Không tìm thấy coin.", chat_id, msg.message_id)
 
-print("🤖 BOT SMC ĐANG CHẠY (BẢN ĐÃ DỌN DẸP VNDC)...")
+print("🤖 BOT SMC ĐANG CHẠY (GIAO DIỆN MỚI + LỆNH RỦI RO ĐỘNG)...")
 threading.Thread(target=global_monitor_thread, daemon=True).start()
 keep_alive()
 bot.infinity_polling()
